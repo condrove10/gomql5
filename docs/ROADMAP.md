@@ -1,0 +1,80 @@
+# Roadmap and session handoff
+
+This project will be built over several sessions. Each session should:
+
+1. Read this file and `CLAUDE.md`.
+2. Pick the next open item.
+3. Update the **Status** column before finishing, recording what was verified
+   and how.
+
+## Status (end of session 1, 2026-11-04)
+
+| area | state | how it was verified |
+|---|---|---|
+| Wire protocol (`protocol/`) | done | unit tests; injected bugs (size limit, truncation) shown to be caught |
+| Go server/terminal (`mt5/server.go`) | done | `go test -race`; injected bugs (token check, ID matching, pending-on-disconnect, tick back-pressure, heartbeat) shown to be caught |
+| Typed API (`mt5/api.go`, `types.go`) | done for v1 scope | FakeEA tests for decoding (array rates/ticks, account, order send), wall-clock time encoding |
+| Constants (`constants_gen.go`) | generated from MetaTrader5 5.0.6231 | spot-check test against MQL5 enum values |
+| GoBridge EA (`mql5/`) | done for v1 scope | **compiled with MetaEditor (build 6295) under Wine: 0 errors, 0 warnings**; ran in the terminal; ping/terminal_info/account_info/symbol_info/copy_rates_from_pos/subscribe_ticks + tick events exercised end to end by `examples/basic` |
+| Docker image (`docker/mt5`) | done | built and run in the sandbox: host-network mode (IP and `localhost`) and `docker compose` (service name `app`), fresh and reused volumes; `bridge_connected` helper has a shell test (`docker/mt5/test`) shown to catch the IPv6-less `/proc` bug |
+| Broker login, trading | **not verified** | no account was available. `order_check`/`order_send`/`positions_get`/`history_*`/`copy_ticks_range` have only been tested against FakeEA |
+
+## Open items, in priority order
+
+1. **Demo account end to end.** Set `MT5_LOGIN`/`MT5_PASSWORD`/`MT5_SERVER`
+   (demo), run `docker compose up`, then run `examples/basic -trade`. Check
+   and record:
+   * the login appears in the hello
+   * the `copy_ticks_range` and history row counts match the terminal
+   * `order_send` open/close retcodes
+2. **Allow-list robustness.**
+   * `allow-host.sh` drives the UI by screen coordinates. If MetaQuotes moves
+     the dialog it breaks; the entrypoint then logs "giving up" after 10
+     attempts.
+   * Ideas: find why the list doesn't persist across restarts (it is
+     written encrypted to `config/settings.ini` on a clean exit, yet came back
+     empty), or test whether the built-in MCP server (below) avoids the need
+     for sockets.
+3. **TLS.**
+   * Go: `mt5.NewServer(tls.NewListener(ln, cfg), …)` already works.
+   * EA: add `InpTLS`. After `SocketConnect`, call
+     `SocketTlsHandshake(sock, host)` and switch to
+     `SocketTlsSend`/`SocketTlsRead(Available)`.
+   * Add a cert-pinning or CA option.
+   * Docker: mount the certificates.
+   * Test: a Go-only TLS test with FakeEA (FakeEA needs a TLS dial option).
+4. **Reconnect helper in Go.** Today a reconnecting EA is a *new* `Terminal`
+   from `Accept`. Add an optional `Session` wrapper that keys on login,
+   re-subscribes ticks and lets callers wait for reconnection.
+5. **Remaining Python API:**
+   * `copy_rates_from`, `copy_ticks_from`
+   * `order_calc_margin`, `order_calc_profit`
+   * `orders_total`, `positions_total`, `history_*_total`
+   * `market_book_add/get/release` (needs `OnBookEvent`, sent as events)
+   * `history_*_get(position=)`
+6. **Trade events.** Push `OnTradeTransaction` as `event:"trade"` so Go
+   doesn't have to poll positions.
+7. **Performance.**
+   * Measure `copy_ticks_range` with 200k rows (JSON building in MQL5).
+   * Consider a binary row format for bars and ticks if it's too slow.
+8. **Image hardening.**
+   * Pin the Wine version.
+   * Run as non-root (currently root inside the container).
+   * Optionally install WebView2.
+   * Push to GHCR from CI. Building it needs ~7.3 GB and network access to
+     MetaQuotes.
+9. **Explore the terminal's built-in MCP server.** Builds from 2026 start an
+   MCP endpoint (`http://127.0.0.1:22346/mcp`, API key in
+   `config/assistant.ini`). Document what tools it exposes. It might replace
+   or complement the EA for some calls.
+10. **Multi-account.** One container per account works now. Document a
+   compose example with N terminals and one Go server (`Hello().Login`
+   identifies each).
+
+## Decisions already made (don't revisit without cause)
+
+* Our own EA plus TCP, not a reverse-engineered pipe and not a Python sidecar.
+* Go is the TCP server; the EA dials out (forced by MQL5).
+* Plain TCP now; TLS is designed in (`NewServer` takes any `net.Listener`).
+* Requests are flat JSON, so the MQL5 parser stays small. Responses can nest.
+* Licence: MIT.

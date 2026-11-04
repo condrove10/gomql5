@@ -1,0 +1,4 @@
+.env
+*.ex5
+*.log
+/bin/

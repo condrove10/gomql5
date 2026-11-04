@@ -1,0 +1,51 @@
+# MetaTrader 5 (Wine, headless) + a Go application, on a private network.
+#
+#   cp .env.example .env   # fill in token and broker account
+#   docker compose up --build
+#
+# The EA in the mt5 container connects OUT to the Go app ("app:7788").
+# Nothing is published to the host except VNC on 127.0.0.1 when VNC_PASSWORD is set.
+services:
+  mt5:
+    build:
+      context: .
+      dockerfile: docker/mt5/Dockerfile
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-debian:trixie-slim}
+    image: gomql5/mt5:local
+    environment:
+      GOBRIDGE_TOKEN: ${GOBRIDGE_TOKEN:?set GOBRIDGE_TOKEN in .env}
+      GOBRIDGE_HOST: app
+      GOBRIDGE_PORT: "7788"
+      MT5_LOGIN: ${MT5_LOGIN:-}
+      MT5_PASSWORD: ${MT5_PASSWORD:-}
+      MT5_SERVER: ${MT5_SERVER:-}
+      MT5_SYMBOL: ${MT5_SYMBOL:-EURUSD}
+      VNC_PASSWORD: ${VNC_PASSWORD:-}
+    volumes:
+      # Portable install dir: terminal, MQL5 folder, saved accounts, history cache.
+      - mt5data:/opt/wine/drive_c/Program Files/MetaTrader 5
+    shm_size: 512m # Docker's 64 MB /dev/shm is too small for Wine/X11
+    ports:
+      - "127.0.0.1:5900:5900"
+    networks: [bridge]
+    depends_on: [app]
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: examples/basic/Dockerfile
+      args:
+        GO_IMAGE: ${GO_IMAGE:-golang:1.24-bookworm}
+    environment:
+      GOBRIDGE_TOKEN: ${GOBRIDGE_TOKEN:?set GOBRIDGE_TOKEN in .env}
+    command: ["-listen", ":7788", "-symbol", "${MT5_SYMBOL:-EURUSD}", "-ticks", "0"]
+    networks: [bridge]
+    restart: unless-stopped
+
+volumes:
+  mt5data:
+
+networks:
+  bridge:
