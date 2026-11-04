@@ -62,7 +62,9 @@ build_args() {
   [ -n "${E2E_CA_CERT:-}" ] && a+=(--secret "id=ca_cert,src=$E2E_CA_CERT")
   [ -n "${BASE_IMAGE:-}" ] && a+=(--build-arg "BASE_IMAGE=$BASE_IMAGE")
   [ -n "${GO_IMAGE:-}" ] && a+=(--build-arg "GO_IMAGE=$GO_IMAGE")
-  printf '%s\n' "${a[@]}"
+  # printf on an empty array still prints one empty line, which mapfile turns
+  # into an empty "" argument (docker then reads it as the build context).
+  [ ${#a[@]} -eq 0 ] || printf '%s\n' "${a[@]}"
 }
 
 if [ $BUILD = 1 ]; then

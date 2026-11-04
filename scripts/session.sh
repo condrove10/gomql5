@@ -46,6 +46,10 @@ FIND_BROKER="${FIND_BROKER:-}"
 POSITIONING_SOURCE="${POSITIONING_SOURCE:-replay}"
 E2E_TIMEOUT="${E2E_TIMEOUT:-600}"
 
+# A noexec /tmp breaks `go test`; see scripts/gotmpdir.sh.
+GOTMPDIR="$(bash scripts/gotmpdir.sh)"
+if [ -n "$GOTMPDIR" ]; then export GOTMPDIR; else unset GOTMPDIR; fi
+
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 OUT="$ROOT/session-out/$TS"
 mkdir -p "$OUT"
@@ -86,10 +90,18 @@ have() { [ -n "${!1:-}" ]; }
 s_env() {
   echo "date (UTC): $(date -u)"
   echo "host: $(uname -a)"
-  echo "git: $(git rev-parse --abbrev-ref HEAD) $(git rev-parse --short HEAD) $(git status --porcelain | wc -l) uncommitted file(s)"
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    echo "git: $(git rev-parse --abbrev-ref HEAD) $(git rev-parse --short HEAD) $(git status --porcelain | wc -l) uncommitted file(s)"
+  else
+    echo "git: not a git checkout (e.g. a zip download)"
+  fi
   echo "go: $(go version 2>&1)"
   echo "docker: $(docker version --format '{{.Server.Version}}' 2>&1)"
-  echo "image: $(docker image inspect -f '{{.Id}} created {{.Created}}' gomql5/mt5:local 2>/dev/null || echo 'gomql5/mt5:local not built')"
+  local img
+  img=$(docker image inspect -f '{{.Id}} created {{.Created}}' gomql5/mt5:local 2>/dev/null) || img="gomql5/mt5:local not built yet"
+  echo "image: $img"
+  echo "temp dir: ${TMPDIR:-/tmp} ($(findmnt -no OPTIONS --target "${TMPDIR:-/tmp}" 2>/dev/null || echo 'mount options unknown'))"
+  echo "go work dir (GOTMPDIR): ${GOTMPDIR:-Go default}"
   echo "disk: $(df -h . | tail -1)"
   echo "env file: $E2E_ENV $([ -f "$E2E_ENV" ] && echo present || echo absent)"
   for v in MT5_LOGIN MT5_SERVER BROKER_SYMBOL FIND_BROKER POSITIONING_SOURCE FUZZTIME HTTPS_PROXY BASE_IMAGE GO_IMAGE E2E_CA_CERT; do

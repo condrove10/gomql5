@@ -21,6 +21,13 @@ POSITIONING_SOURCE ?= replay
 E2E_TIMEOUT ?= 600
 export FUZZTIME BROKER_SYMBOL FIND_BROKER POSITIONING_SOURCE E2E_TIMEOUT
 
+# A noexec /tmp breaks `go test` ("fork/exec …: permission denied"): Go runs
+# test binaries from its work dir. scripts/gotmpdir.sh picks a usable one.
+GOTMPDIR := $(shell bash scripts/gotmpdir.sh)
+ifneq ($(GOTMPDIR),)
+export GOTMPDIR
+endif
+
 .DEFAULT_GOAL := help
 .PHONY: help session session-live check test shell fuzz image probe probe-net probe-api \
 	e2e e2e-goldrec e2e-live build goldrec clean clean-docker
