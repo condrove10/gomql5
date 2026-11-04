@@ -166,8 +166,11 @@ s_e2e_live() {
   scripts/goldrec-e2e.sh "${args[@]}"
   local rc=$?
   echo "-- live price sample:"; grep '"trade_server_connected":true' "$OUT/e2e-live/data/prices.jsonl" 2>/dev/null | head -3
-  echo "-- terminal journal (Network/account lines):"
-  grep -E $'\t(Network|Terminal)\t' "$OUT/e2e-live/terminal.log" 2>/dev/null | tail -30
+  echo "-- visible terminal windows (id title):"; cat "$OUT/e2e-live/windows.txt" 2>/dev/null
+  echo "-- container log:"; grep '\[gomql5-mt5\]' "$OUT/e2e-live/container.log" 2>/dev/null | tail -15
+  echo "-- terminal journal, last 40 lines (the on-disk journal lags; screenshots are live):"
+  tail -40 "$OUT/e2e-live/terminal.log" 2>/dev/null
+  echo "-- screenshots:"; ls "$OUT/e2e-live/"*.png 2>/dev/null
   return $rc
 }
 

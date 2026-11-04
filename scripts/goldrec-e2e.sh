@@ -77,6 +77,8 @@ collect() {
   docker logs "$NAME" >"$OUT/container.log" 2>&1 || true
   if [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = "true" ]; then
     scripts/mt5ctl.sh -c "$NAME" -o "$OUT" status >"$OUT/status.txt" 2>&1 || true
+    # Visible terminal windows (main window title shows the account once logged in; dialogs show up here too).
+    scripts/mt5ctl.sh -c "$NAME" exec 'for w in $(xdotool search --onlyvisible --class terminal64 2>/dev/null); do echo "$w $(xdotool getwindowname "$w")"; done' >"$OUT/windows.txt" 2>&1 || true
     scripts/mt5ctl.sh -c "$NAME" -o "$OUT" shot screen >/dev/null 2>&1 || true
     scripts/mt5ctl.sh -c "$NAME" -o "$OUT" goto experts-log >/dev/null 2>&1 || true
     scripts/mt5ctl.sh -c "$NAME" -o "$OUT" goto journal >/dev/null 2>&1 || true
@@ -110,8 +112,11 @@ wait_for() {
 }
 have_ticks() { [ "$(lines "$DATA/prices.jsonl")" -ge "$1" ]; }
 have_obs() { [ "$(lines "$DATA/sentiment.jsonl")" -ge 2 ]; }
-connects() { [ "$(grep -c '"kind":"terminal_connected"' "$DATA/events.jsonl" 2>/dev/null || echo 0)" -ge "$1" ]; }
-have_live_ticks() { [ "$(grep -c '"trade_server_connected":true' "$DATA/prices.jsonl" 2>/dev/null || echo 0)" -ge "$1" ]; }
+# count PATTERN FILE: matching lines, 0 when none or no file. (Not
+# `grep -c … || echo 0`: with no match grep prints 0 AND fails, giving "0\n0".)
+count() { local n; n=$(grep -c -- "$1" "$2" 2>/dev/null); echo "${n:-0}"; }
+connects() { [ "$(count '"kind":"terminal_connected"' "$DATA/events.jsonl")" -ge "$1" ]; }
+have_live_ticks() { [ "$(count '"trade_server_connected":true' "$DATA/prices.jsonl")" -ge "$1" ]; }
 trade_connected() { grep -q '"kind":"terminal_info".*"trade_server_connected":true\|"trade_server_connected":true.*"kind":"terminal_info"' "$DATA/events.jsonl" 2>/dev/null; }
 # Echo the terminal's Network journal lines (login progress) once each.
 SEEN_NET=0
