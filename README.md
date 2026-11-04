@@ -143,3 +143,9 @@ docs/                  protocol, Docker/Linux notes, roadmap
 MIT. The constant values in `mt5/constants_gen.go` are generated from the
 MIT-licensed `MetaTrader5` package (© MetaQuotes Ltd.). MetaTrader is a
 trademark of MetaQuotes Ltd.; this project isn't affiliated with them.
+
+## Applications
+
+* [`apps/goldrec`](docs/goldrec.md): a read-only recorder for Myfxbook XAUUSD
+  long/short positioning, stored next to broker gold ticks as JSON Lines with
+  raw-response provenance. It does not trade.

@@ -27,7 +27,21 @@ Session 2 added the verification tooling:
 * `docker/mt5/lib.sh` (single source of UI coordinates, plus a UI lock)
 * shell tests under `docker/mt5/test`
 
+Session 3 (2026-11-04) added `apps/goldrec` (see `docs/goldrec.md`):
+
+| area | state | how it was verified |
+|---|---|---|
+| Myfxbook API adapter (`apps/goldrec/myfxbook`) | done, **not run against an authenticated account** | httptest fake vendor + captured real unauthenticated error bodies; 16 injected bugs caught |
+| Recorder (`apps/goldrec/record`, `main.go`) | done for JSONL storage | FakeEA tests; `scripts/goldrec-e2e.sh --broker-symbol EURUSD --min-ticks 1 --restart` PASS against the real terminal |
+| Live gold ticks | **not verified** | the terminal has no account: XAUUSD has no quote or history (`CopyRates` 4401). The `e2e.sh` "tick" is the cached EURUSD quote (`time_msc` 2024-08-23), not live data |
+
 ## Open items, in priority order
+
+0. **goldrec go-live** (needs credentials): `goldrec -source api -once`
+   with Myfxbook credentials; check the field names and the session format;
+   then `goldrec-e2e.sh --source api --restart` with a demo account
+   (`MT5_*`), expecting `trade_server_connected:true`. Make `e2e.sh` require
+   a fresh tick once an account is available.
 
 1. **Demo account end to end.** Set `MT5_LOGIN`/`MT5_PASSWORD`/`MT5_SERVER`
    (demo), run `docker compose up`, then run `examples/basic -trade`. Check

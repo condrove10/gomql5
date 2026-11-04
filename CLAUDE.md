@@ -19,8 +19,18 @@ scripts/e2e.sh --build
 ```
 
 This builds the image, runs the real terminal next to the Go example, and
-passes on the first tick. `--compose` runs the same check through
-docker-compose. `--keep` leaves the terminal running.
+passes on the first tick. Without a broker account that tick is the
+terminal's cached quote, not live data (`docs/goldrec.md` §4). `--compose`
+runs the same check through docker-compose. `--keep` leaves the terminal
+running.
+
+```bash
+scripts/goldrec-e2e.sh --broker-symbol EURUSD --min-ticks 1 --restart
+```
+
+This runs the gold positioning recorder (`apps/goldrec`, `docs/goldrec.md`)
+against the real terminal, including a reconnect. Without an account, use
+EURUSD: XAUUSD has no cached quote.
 
 ```bash
 scripts/mt5ctl.sh status
