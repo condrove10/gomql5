@@ -35,9 +35,20 @@ Session 3 (2026-11-04) added `apps/goldrec` (see `docs/goldrec.md`):
 | Recorder (`apps/goldrec/record`, `main.go`) | done for JSONL storage | FakeEA tests; `scripts/goldrec-e2e.sh --broker-symbol EURUSD --min-ticks 1 --restart` PASS against the real terminal |
 | Live gold ticks | **not verified** | the terminal has no account: XAUUSD has no quote or history (`CopyRates` 4401). The `e2e.sh` "tick" is the cached EURUSD quote (`time_msc` 2024-08-23), not live data |
 
+Session 4 (2026-11-04):
+
+* **Live gold attempt.** The FTMO demo account (read-only password) couldn't
+  connect from the cloud sandbox (see `docs/TESTING.md` §2a).
+* **Tests.** Added a wire-contract test for every wrapper, event-path tests,
+  runnable examples, and six fuzz targets. The new checks were shown able to
+  fail: 7 injected bugs, all caught after strengthening two checks.
+* **Tooling.** Added `Makefile` + `scripts/session.sh` (one-log verification
+  sessions) and `mt5ctl find-broker`.
+
 ## Open items, in priority order
 
-0. **goldrec go-live** (needs credentials): `goldrec -source api -once`
+0. **goldrec go-live** (needs credentials and a network that reaches the
+   broker; run `make session-live FIND_BROKER=…` and review the bundle): `goldrec -source api -once`
    with Myfxbook credentials; check the field names and the session format;
    then `goldrec-e2e.sh --source api --restart` with a demo account
    (`MT5_*`), expecting `trade_server_connected:true`. Make `e2e.sh` require

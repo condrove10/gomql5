@@ -18,11 +18,16 @@ UI_OPTIONS_URL_ADD_ROW="500 631"  # Experts tab: "+ add new URL" row
 UI_OPTIONS_OK="759 765"           # Options dialog: OK
 UI_TOOLBOX_TAB_EXPERTS="402 993"  # bottom Toolbox: "Experts" tab (EA Print output)
 UI_TOOLBOX_TAB_JOURNAL="472 993"  # bottom Toolbox: "Journal" tab (terminal log)
+UI_MENU_FILE="20 41"              # menu bar: File
+UI_MENU_FILE_OPEN_ACCOUNT="75 344" # File > Open an Account (company search wizard)
+UI_ACCOUNT_SEARCH_FIELD="570 360" # wizard: "add new company like 'CompanyName'..." field
+UI_ACCOUNT_SEARCH_FIND="903 360"  # wizard: "Find your company" button
 
 # --- crop regions for screenshots (ImageMagick geometry WxH+X+Y) ---------------
 UI_CROP_OPTIONS="620x380+350+395"  # whole Options dialog
 UI_CROP_URLLIST="620x140+350+590"  # "Allow WebRequest for listed URL" + list
 UI_CROP_TOOLBOX="1280x320+0+680"   # Toolbox (Experts/Journal rows)
+UI_CROP_ACCOUNT="700x520+296+270"  # File > Open an Account wizard
 
 # --- locking ----------------------------------------------------------------
 # Only one actor may drive the UI at a time: allow-host.sh (and its retries),
@@ -72,6 +77,25 @@ ui_options_add_url() {
 }
 
 ui_options_ok() { ui_click $UI_OPTIONS_OK; sleep 1; }
+
+# Search the MetaQuotes broker directory for a company (e.g. "FTMO") in
+# File > Open an Account. A successful search adds that company's servers
+# (e.g. FTMO-Demo) to the terminal, which a config login to an unknown server
+# needs. Leaves the wizard open on the result list (screenshot it, then
+# ui_dismiss); it never proceeds to open an account. Click and type are one
+# xdotool call: with no window manager, focus is lost between calls (observed:
+# separate calls typed nothing). Verified up to the search starting (field
+# greyed out) on build 6295; the result list is unverified because the
+# sandbox could not reach the directory.
+ui_find_company() {
+  ui_dismiss
+  ui_click $UI_MENU_FILE; sleep 2
+  ui_click $UI_MENU_FILE_OPEN_ACCOUNT; sleep 4
+  # shellcheck disable=SC2086
+  xdotool mousemove ${UI_ACCOUNT_SEARCH_FIELD} click 1 sleep 0.5 type --delay 80 "$1"
+  sleep 1
+  ui_click $UI_ACCOUNT_SEARCH_FIND
+}
 
 ui_toolbox_experts() { ui_click $UI_TOOLBOX_TAB_EXPERTS; sleep 1; }
 ui_toolbox_journal() { ui_click $UI_TOOLBOX_TAB_JOURNAL; sleep 1; }

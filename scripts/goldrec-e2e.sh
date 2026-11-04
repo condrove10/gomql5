@@ -14,6 +14,12 @@
 #   --restart           also restart the terminal and require ticks after reconnect
 #   --timeout S         seconds per wait (default 300)
 #   --port P            (default 7789)
+#   --require-live      fail unless ticks arrive with trade_server_connected=true
+#                       (needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER)
+#   --find-broker NAME  if the account is not connected after --connect-timeout,
+#                       search the broker directory for NAME (File > Open an
+#                       Account) and screenshot the result, then keep waiting
+#   --connect-timeout S seconds to wait for the trade-server connection (default 120)
 #   --keep              leave the terminal running
 #   --out DIR           evidence directory (default e2e-out/goldrec-<timestamp>)
 #
@@ -26,6 +32,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SYM=XAUUSD SOURCE=replay INTERVAL=15s MIN_TICKS=3 RESTART=0 TIMEOUT=300 PORT=7789 KEEP=0 OUT=""
+LIVE=0 FIND_BROKER="" CONNECT_TIMEOUT=120
 while [ $# -gt 0 ]; do
   case $1 in
     --broker-symbol) SYM=$2; shift ;;
@@ -36,6 +43,9 @@ while [ $# -gt 0 ]; do
     --timeout) TIMEOUT=$2; shift ;;
     --port) PORT=$2; shift ;;
     --keep) KEEP=1 ;;
+    --require-live) LIVE=1 ;;
+    --find-broker) FIND_BROKER=$2; shift ;;
+    --connect-timeout) CONNECT_TIMEOUT=$2; shift ;;
     --out) OUT=$2; shift ;;
     -h | --help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) echo "goldrec-e2e: unknown option $1" >&2; exit 2 ;;
@@ -69,6 +79,9 @@ collect() {
     scripts/mt5ctl.sh -c "$NAME" -o "$OUT" status >"$OUT/status.txt" 2>&1 || true
     scripts/mt5ctl.sh -c "$NAME" -o "$OUT" shot screen >/dev/null 2>&1 || true
     scripts/mt5ctl.sh -c "$NAME" -o "$OUT" goto experts-log >/dev/null 2>&1 || true
+    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" goto journal >/dev/null 2>&1 || true
+    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" logs terminal 400 >"$OUT/terminal.log" 2>&1 || true
+    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" logs compile >"$OUT/compile.log" 2>&1 || true
   fi
 }
 cleanup() {
@@ -98,9 +111,34 @@ wait_for() {
 have_ticks() { [ "$(lines "$DATA/prices.jsonl")" -ge "$1" ]; }
 have_obs() { [ "$(lines "$DATA/sentiment.jsonl")" -ge 2 ]; }
 connects() { [ "$(grep -c '"kind":"terminal_connected"' "$DATA/events.jsonl" 2>/dev/null || echo 0)" -ge "$1" ]; }
+have_live_ticks() { [ "$(grep -c '"trade_server_connected":true' "$DATA/prices.jsonl" 2>/dev/null || echo 0)" -ge "$1" ]; }
+trade_connected() { grep -q '"kind":"terminal_info".*"trade_server_connected":true\|"trade_server_connected":true.*"kind":"terminal_info"' "$DATA/events.jsonl" 2>/dev/null; }
+# Echo the terminal's Network journal lines (login progress) once each.
+SEEN_NET=0
+show_network() {
+  local all n
+  all=$(scripts/mt5ctl.sh -c "$NAME" logs terminal 400 2>/dev/null | grep -E $'\tNetwork\t' || true)
+  n=$(printf '%s' "$all" | grep -c . || true)
+  if [ "$n" -gt "$SEEN_NET" ]; then printf '%s\n' "$all" | tail -n $((n - SEEN_NET)) | sed 's/^/[goldrec-e2e] journal: /'; SEEN_NET=$n; fi
+}
 
 say "goldrec on 127.0.0.1:$PORT (source=$SOURCE, broker symbol $SYM); terminal $NAME"
 start_terminal
+if [ $LIVE = 1 ]; then
+  [ -n "${MT5_LOGIN:-}" ] || { say "FAIL: --require-live needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER"; exit 1; }
+  wait_for "EA connection" connects 1
+  deadline=$((SECONDS + CONNECT_TIMEOUT))
+  while [ $SECONDS -lt $deadline ] && ! trade_connected; do show_network; sleep 5; done
+  if ! trade_connected && [ -n "$FIND_BROKER" ]; then
+    say "account not connected after ${CONNECT_TIMEOUT}s: searching the broker directory for '$FIND_BROKER'"
+    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" find-broker "$FIND_BROKER" 45 || say "find-broker failed"
+    say "      screenshot: $OUT/find-broker-$FIND_BROKER.png"
+  fi
+  live_or_net() { show_network; trade_connected; }
+  wait_for "trade-server connection (account $MT5_LOGIN on ${MT5_SERVER:-?})" live_or_net
+  say "trade server connected"
+  wait_for "$MIN_TICKS live $SYM ticks" have_live_ticks "$MIN_TICKS"
+fi
 wait_for "$MIN_TICKS $SYM ticks" have_ticks "$MIN_TICKS"
 wait_for "2 positioning observations" have_obs
 if [ $RESTART = 1 ]; then
@@ -121,4 +159,4 @@ if grep -q '"trade_server_connected":false' "$DATA/prices.jsonl"; then
 fi
 say "      first tick: $(head -1 "$DATA/prices.jsonl")"
 say "      last observation: $(tail -1 "$DATA/sentiment.jsonl" | cut -c1-400)"
-say "      evidence: $OUT (goldrec.log, data/, screen.png, experts-log.png)"
+say "      evidence: $OUT (goldrec.log, data/, terminal.log, screen.png, journal.png, experts-log.png)"

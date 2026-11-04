@@ -5,6 +5,7 @@
 #
 # Usage: scripts/e2e.sh [options]
 #   --build          build gomql5/mt5:local first (else it must exist)
+#   --image-only     with --build: build the image and exit (no test run)
 #   --compose        run docker-compose.yml (service name "app") instead of host networking
 #   --keep           leave the terminal running afterwards (inspect with scripts/mt5ctl.sh)
 #   --token T        token given to the EA (default e2e-token)
@@ -22,10 +23,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BUILD=0 COMPOSE=0 KEEP=0 TOKEN=e2e-token APP_TOKEN="" PORT=7788 TIMEOUT=300 OUT=""
+IMAGE_ONLY=0 BUILD=0 COMPOSE=0 KEEP=0 TOKEN=e2e-token APP_TOKEN="" PORT=7788 TIMEOUT=300 OUT=""
 while [ $# -gt 0 ]; do
   case $1 in
     --build) BUILD=1 ;;
+    --image-only) IMAGE_ONLY=1 ;;
     --compose) COMPOSE=1 ;;
     --keep) KEEP=1 ;;
     --token) TOKEN=$2; shift ;;
@@ -70,6 +72,10 @@ if [ $BUILD = 1 ]; then
     { say "FAIL: image build failed"; tail -20 "$OUT/build.log"; exit 1; }
 fi
 docker image inspect "$IMAGE" >/dev/null 2>&1 || { say "FAIL: $IMAGE missing (use --build)"; exit 1; }
+if [ $IMAGE_ONLY = 1 ]; then
+  say "PASS: image $IMAGE $(docker image inspect -f '{{.Id}} {{.Created}}' "$IMAGE")"
+  exit 0
+fi
 
 collect() {
   local c=$1

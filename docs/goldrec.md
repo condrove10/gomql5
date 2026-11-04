@@ -177,20 +177,35 @@ path, not live market data.
 | Storage | JSONL plus a gzip raw archive. Deliberately replaceable (SQLite next). No automatic deletion. The ledger file is never compacted (about 120 KB a day at 60 s). |
 | Viewer, exports, Discord, hosting | Not started (out of scope for this step). |
 
+### Credentialed attempt (2026-11-04, cloud sandbox)
+
+An FTMO demo account was tried with its read-only password (never committed or
+logged). The terminal took the login, but it bound it to `MetaQuotes-Demo`
+(`connection to MetaQuotes-Demo lost`) and never reached a trade server. The
+stock terminal has no `FTMO-Demo` entry, and the in-terminal broker search
+for "FTMO" did not return from the sandbox. Result: no live XAUUSD ticks.
+`scripts/goldrec-e2e.sh --require-live` correctly fails in that state.
+
+Re-run on a machine with normal network access:
+
+```bash
+make session-live FIND_BROKER=FTMO
+```
+
 ## 6. What it takes to go live
 
 1. **Myfxbook credentials.** Run `-source api -once`, then read
    `attempts.jsonl` and the raw body. Confirm the field names and the session
    format, and record what you find here.
 2. **A broker account.** Even a demo account works, at a broker whose gold
-   symbol you choose. Then run:
+   symbol you choose. Put `MT5_*` in `.env`, then run:
 
    ```bash
-   scripts/goldrec-e2e.sh --broker-symbol <SYM> --source api --restart
+   make session-live FIND_BROKER=<broker name>
    ```
 
-   It needs `MYFXBOOK_*` set and the container started with `MT5_*`.
-   Expect `trade_server_connected:true`.
+   This runs `goldrec-e2e.sh --require-live`, which passes only on
+   `trade_server_connected:true` ticks.
 3. **A host** with stable egress, because the docs say sessions are bound to
    the login IP. Run goldrec under a supervisor, then do a 24 h observation
    run plus a restart/outage exercise.

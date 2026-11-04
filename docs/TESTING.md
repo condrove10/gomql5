@@ -27,7 +27,8 @@ Every command quoted here was run in sessions 1–2 (2026-11-04) against MT5 bui
 
 | layer | command | catches | cost |
 |---|---|---|---|
-| Go unit + FakeEA | `go vet ./... && go test -race -count=1 ./...` | framing, multiplexing, timeouts, decoding, params | seconds |
+| Go unit + FakeEA | `go vet ./... && go test -race -count=1 ./...` | framing, multiplexing, timeouts, decoding, params; `TestWireContract` pins method + params of every wrapper; runnable `Example*` functions | seconds |
+| Go fuzz | `make fuzz` (or `go test -run '^$' -fuzz '^FuzzX$' -fuzztime 60s ./pkg`) | panics/hangs on hostile frames, request flattening, tick/rate decoding, vendor bodies, ledger files | 20 s per target |
 | Container shell helpers | `for t in docker/mt5/test/*_test.sh; do bash "$t"; done` | entrypoint/lib logic (`/proc` parsing, name resolution, UI lock) | seconds |
 | MQL5 compile | runs inside every container start; `scripts/mt5ctl.sh logs compile` | MQL5 syntax/API errors (e.g. `TERMINAL_TRADEAPI_DISABLED` doesn't exist in MQL5) | in e2e |
 | End to end | `scripts/e2e.sh [--build] [--compose]` | everything between Go and the real terminal | 1–2 min (+~6 min build) |
@@ -43,6 +44,29 @@ Proving a check can fail: examples from sessions 1–2, each with a matching tes
 | `docker/mt5/test/resolve_host_test.sh` | dropping `\|\| true` after `getent` |
 | `docker/mt5/test/ui_lock_test.sh` | replacing `flock` with `:` (output: `A1 B1 A2 …`) |
 | `scripts/e2e.sh` | `--app-token` mismatch → `FAIL: … bad token`; `UI_OPTIONS_OK="10 10"` → `FAIL: no tick within 180s` |
+
+## 2a. One-command sessions (`make session`)
+
+`scripts/session.sh` (behind every `make` verification target) runs the
+layers in order and writes `session-out/<ts>/session.log`: each step's
+command, output, duration and PASS/FAIL/SKIP, then a summary. It also writes
+`session-out/<ts>.tar.gz` with every step's evidence. Credentials come from
+`.env` or the environment, and their values are redacted from the log and
+the bundle. Use it on a machine with normal network access and hand back the
+bundle.
+
+* `make e2e-live` needs `MT5_*` and fails unless live ticks arrive
+  (`trade_server_connected:true`).
+* `FIND_BROKER=NAME` adds a broker-directory search when the login doesn't
+  connect.
+
+**Cloud sandbox limit (2026-11-04).** With an FTMO demo account
+(`MT5_SERVER=FTMO-Demo`), the terminal never connected. The journal showed
+`'<login>': connection to MetaQuotes-Demo lost`, and the status bar stayed at
+`0 / 2 Kb`. In *File → Open an Account*, the broker-directory search for
+"FTMO" never returned. The sandbox's outbound traffic goes through an HTTPS
+proxy, and probing raw-TCP egress further was not permitted. So live broker
+data can't be verified from the sandbox. Run `make session-live` elsewhere.
 
 ## 3. End-to-end runs (`scripts/e2e.sh`)
 

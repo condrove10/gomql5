@@ -11,6 +11,14 @@ go vet ./... && go test -race -count=1 ./...
 ```
 
 ```bash
+make session
+```
+
+This runs every layer (tests, fuzz, image, probes, e2e, and the live e2e when
+`MT5_*` is in `.env`) into one redacted log plus a bundle under
+`session-out/`. `make help` lists the single-step targets.
+
+```bash
 for t in docker/mt5/test/*_test.sh; do bash "$t"; done
 ```
 

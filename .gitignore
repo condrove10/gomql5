@@ -5,3 +5,5 @@
 e2e-out/
 mt5ctl-out/
 goldrec-data/
+session-out/
+.e2e.env
