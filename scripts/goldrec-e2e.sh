@@ -23,8 +23,8 @@
 #                       bridge reports a trade-server connection. Screenshots of
 #                       each server list and form go into the evidence.
 #   --connect-timeout S seconds to wait for the configured login (default 90)
-#   --login-tries N     server-list entries to try (default 5)
-#   --login-wait S      seconds to wait for a connection after each try (default 60)
+#   --login-tries N     server-list entries to try (default 12; stops early at the end of the list)
+#   --login-wait S      max seconds per try (default 60; moves on as soon as the journal shows the try failed)
 #   --keep              leave the terminal running
 #   --out DIR           evidence directory (default e2e-out/goldrec-<timestamp>)
 #
@@ -37,7 +37,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SYM=XAUUSD SOURCE=replay INTERVAL=15s MIN_TICKS=3 RESTART=0 TIMEOUT=300 PORT=7789 KEEP=0 OUT=""
-LIVE=0 FIND_BROKER="" CONNECT_TIMEOUT=90 LOGIN_TRIES=5 LOGIN_WAIT=60
+LIVE=0 FIND_BROKER="" CONNECT_TIMEOUT=90 LOGIN_TRIES=12 LOGIN_WAIT=60
 while [ $# -gt 0 ]; do
   case $1 in
     --broker-symbol) SYM=$2; shift ;;
@@ -144,19 +144,44 @@ start_terminal
 # back to MetaQuotes-Demo: "Invalid account"), log in through File > Open an
 # Account for $FIND_BROKER, trying server-list entries 0..LOGIN_TRIES-1 until
 # the bridge reports a trade-server connection. Then wait for live ticks.
+# Journal parsing (stdin = terminal journal lines). A failed wizard login logs
+#   <tab>Network<tab>'<login>': authorization on FTMO-Server4 failed (Invalid account)
+# which names the server that list entry pointed at; the list order is the
+# broker's (seen: Server4, Server5, Server, Server3, Server2, Demo), not alphabetical.
+failed_auth_count() { grep -cE $'\tNetwork\t.*authorization on [^ ]+ failed' || true; }
+# (`|| true`: no match is normal, and this script runs under set -euo pipefail.)
+last_failed_server() { { grep -oE $'\tNetwork\t.*authorization on [^ ]+ failed' || true; } | tail -1 | sed -E 's/.*authorization on ([^ ]+) failed/\1/'; }
+journal() { scripts/mt5ctl.sh -c "$NAME" logs terminal 5000 2>/dev/null; }
+LOGIN_START=0 # after a success, a restart starts from the entry that worked
 ensure_live() {
-  local need=$1 deadline idx
+  local need=$1 deadline idx before srv prev=""
   [ -n "${MT5_LOGIN:-}" ] && [ -n "${MT5_PASSWORD:-}" ] || { say "FAIL: --require-live needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER"; exit 1; }
   deadline=$((SECONDS + CONNECT_TIMEOUT))
   while [ $SECONDS -lt $deadline ] && ! trade_connected; do show_network; sleep 5; done
   if ! trade_connected && [ -n "$FIND_BROKER" ]; then
-    for ((idx = 0; idx < LOGIN_TRIES; idx++)); do
+    for ((idx = LOGIN_START; idx < LOGIN_START + LOGIN_TRIES; idx++)); do
+      before=$(journal | failed_auth_count)
       say "not connected to a trade server: logging in via File > Open an Account ('$FIND_BROKER', server list entry $idx)"
-      scripts/mt5ctl.sh -c "$NAME" -o "$OUT" login-broker "$FIND_BROKER" "$idx" || say "login-broker failed"
-      say "      screenshots: $OUT/login-$idx-servers.png, $OUT/login-$idx-form.png"
+      scripts/mt5ctl.sh -c "$NAME" -o "$OUT" login-broker "$FIND_BROKER" "$idx" >/dev/null || say "login-broker failed"
+      say "      screenshots: login-$idx-servers.png, login-$idx-form.png"
+      # Wait for a trade-server connection, or move on as soon as this
+      # attempt's "authorization on X failed" shows up in the journal.
       deadline=$((SECONDS + LOGIN_WAIT))
-      while [ $SECONDS -lt $deadline ] && ! trade_connected; do show_network; sleep 5; done
-      trade_connected && break
+      while [ $SECONDS -lt $deadline ] && ! trade_connected; do
+        show_network
+        [ "$(journal | failed_auth_count)" -gt "$before" ] && break
+        sleep 3
+      done
+      if trade_connected; then LOGIN_START=$idx; break; fi
+      srv=$(journal | last_failed_server)
+      if [ -n "$srv" ] && [ "$srv" = "${MT5_SERVER:-}" ]; then
+        say "FAIL: $srv itself rejected account $MT5_LOGIN (Invalid account): check MT5_LOGIN/MT5_PASSWORD"; exit 1
+      fi
+      if [ -n "$srv" ] && [ "$srv" = "$prev" ]; then
+        say "FAIL: end of $FIND_BROKER's server list reached ($srv again) without '${MT5_SERVER:-?}'; see login-*-servers.png"; exit 1
+      fi
+      [ -n "$srv" ] && say "      entry $idx is $srv (not ${MT5_SERVER:-?}); next entry"
+      prev=$srv
     done
   fi
   live_or_net() { show_network; trade_connected; }
