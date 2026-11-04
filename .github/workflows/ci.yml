@@ -23,7 +23,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shell syntax
-        run: for f in docker/mt5/*.sh; do bash -n "$f"; done
-      - name: entrypoint helpers
-        run: bash docker/mt5/test/bridge_connected_test.sh
-      - run: bash docker/mt5/test/resolve_host_test.sh
+        run: for f in docker/mt5/*.sh scripts/*.sh docker/mt5/test/*.sh; do bash -n "$f" || exit 1; done
+      - name: container helper tests
+        run: for t in docker/mt5/test/*_test.sh; do bash "$t" || exit 1; done

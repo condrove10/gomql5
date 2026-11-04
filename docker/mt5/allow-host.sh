@@ -6,28 +6,18 @@
 #
 # Usage (inside the container, terminal running):  allow-host.sh <ip|localhost>
 # The list rejects single-label names like "app"; entrypoint.sh passes an IP.
-# Coordinates assume the 1280x1024 Xvfb screen started by entrypoint.sh and were
-# recorded against MT5 build 6296. If a future build moves the dialog, do it once
-# over VNC instead (VNC_PASSWORD); the setting persists in the volume.
+# Coordinates live in /usr/local/lib/gomql5/lib.sh (docker/mt5/lib.sh).
 set -euo pipefail
 HOST="${1:?usage: allow-host.sh <host>}"
-export DISPLAY="${DISPLAY:-:99}"
+# shellcheck source=lib.sh
+source "${GOMQL5_LIB:-/usr/local/lib/gomql5/lib.sh}"
 
-for _ in $(seq 1 120); do
-  xdotool search --name "MetaTrader 5" >/dev/null 2>&1 && break
-  sleep 1
-done
+ui_wait_main 120 || { echo "[gomql5-mt5] allow-host: terminal window not found" >&2; exit 1; }
 sleep "${ALLOW_HOST_DELAY:-20}" # let start-up dialogs (account wizard, LiveUpdate) appear
 
-xdotool key Escape; sleep 1; xdotool key Escape; sleep 1 # close start-up dialogs
-# There is no window manager, so keyboard focus is unreliable: use the mouse.
-xdotool mousemove 215 41 click 1; sleep 2                 # Tools menu
-xdotool mousemove 240 274 click 1; sleep 3                # Options...
-xdotool mousemove 515 410 click 1; sleep 2                # "Experts" tab
-xdotool mousemove 500 631 click 1; sleep 1                # select "add new URL" row
-xdotool click --repeat 2 --delay 80 1; sleep 1            # double-click: edit
-xdotool type --delay 50 "$HOST"; xdotool key Return; sleep 1
-xdotool mousemove 759 765 click 1                         # OK
-# The terminal persists this to config/settings.ini only on a clean shutdown
-# (entrypoint.sh closes the window on SIGTERM). Success shows as the EA connecting.
+ui_lock 120 || { echo "[gomql5-mt5] allow-host: UI lock busy" >&2; exit 1; }
+ui_open_options_experts
+ui_options_add_url "$HOST"
+ui_options_ok
+# Success shows as the EA connecting (entrypoint.sh watches for it and retries).
 echo "[gomql5-mt5] allow-host: requested $HOST"

@@ -18,6 +18,8 @@ MT5_SYMBOL="${MT5_SYMBOL:-EURUSD}"
 MT5_PERIOD="${MT5_PERIOD:-M1}"
 
 log() { echo "[gomql5-mt5] $*"; }
+# shellcheck source=lib.sh
+source "${GOMQL5_LIB:-/usr/local/lib/gomql5/lib.sh}" # UI helpers, bridge_connected
 
 # The terminal's allowed-URL list silently rejects single-label names such as
 # "app" (also as "http://app"); IPv4 addresses and "localhost" are accepted.
@@ -102,15 +104,6 @@ ExpertParameters=GoBridge.set
 Symbol=$MT5_SYMBOL
 Period=$MT5_PERIOD"
 
-# True when some process holds an ESTABLISHED TCP connection to the Go port.
-# Only existing tables are read: /proc/net/tcp6 is absent when IPv6 is off, and a
-# missing file makes awk exit 2 (= "not connected" forever).
-bridge_connected() {
-  local hex f files=()
-  hex=$(printf '%04X' "$GOBRIDGE_PORT")
-  for f in /proc/net/tcp /proc/net/tcp6; do [ -r "$f" ] && files+=("$f"); done
-  awk -v p=":$hex" '$3 ~ p"$" && $4 == "01" { found = 1 } END { exit !found }' "${files[@]}"
-}
 
 # UI automation is timing-sensitive (start-up dialogs, LiveUpdate prompts), so
 # verify by watching for the EA's connection and retry until it appears.
@@ -144,13 +137,9 @@ TERM_PID=$!
 # such as the allowed-URL list on a clean exit. Use `docker stop -t 30`.
 graceful_stop() {
   log "stopping terminal"
-  # Escape dismisses modal dialogs (e.g. the LiveUpdate "Restart" prompt) that
-  # would swallow Alt+F4. There is no window manager, so focus explicitly.
-  xdotool key Escape 2>/dev/null || true; sleep 1
-  xdotool key Escape 2>/dev/null || true; sleep 1
-  w=$(xdotool search --name "MetaTrader 5" 2>/dev/null | head -1 || true)
-  [ -n "$w" ] && xdotool windowfocus "$w" 2>/dev/null || true
-  xdotool key alt+F4 2>/dev/null || true
+  # Escape first: modal dialogs (e.g. the LiveUpdate "Restart" prompt) swallow Alt+F4.
+  ui_lock 10 || true # don't let a stuck UI actor block shutdown
+  ui_close_terminal
   for _ in $(seq 1 20); do
     pgrep -f terminal64.exe >/dev/null || break
     sleep 1

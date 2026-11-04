@@ -2,3 +2,5 @@
 *.ex5
 *.log
 /bin/
+e2e-out/
+mt5ctl-out/

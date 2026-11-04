@@ -1,10 +1,10 @@
 #!/bin/bash
-# Tests entrypoint.sh's bridge_connected() against fake /proc/net tables.
+# Tests lib.sh's bridge_connected() against fake /proc/net tables.
 # Run: bash docker/mt5/test/bridge_connected_test.sh
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
-fn=$(sed -n '/^bridge_connected() {/,/^}/p' "$here/../entrypoint.sh")
-[ -n "$fn" ] || { echo "FAIL: bridge_connected not found in entrypoint.sh"; exit 1; }
+fn=$(sed -n '/^bridge_connected() {/,/^}/p' "$here/../lib.sh")
+[ -n "$fn" ] || { echo "FAIL: bridge_connected not found in lib.sh"; exit 1; }
 GOBRIDGE_PORT=7788
 est='  0: 0100007F:9A3C 0100007F:1E6C 01 0'     # established, remote port 7788
 lis='  0: 00000000:1E6C 00000000:0000 0A 0'     # listening on 7788 (not a client)

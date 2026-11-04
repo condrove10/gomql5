@@ -31,7 +31,7 @@ RUN --mount=type=secret,id=ca_cert,required=false \
       echo 'Acquire::https::CAInfo "/tmp/build-ca.crt";' > /etc/apt/apt.conf.d/99build-ca; \
     fi; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl gnupg xvfb xauth x11vnc xdotool procps tini; \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg xvfb xauth x11vnc xdotool imagemagick procps tini; \
     update-ca-certificates; \
     dpkg --add-architecture i386; \
     mkdir -pm755 /etc/apt/keyrings; \
@@ -45,6 +45,7 @@ RUN --mount=type=secret,id=ca_cert,required=false \
 
 COPY docker/mt5/install-mt5.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/install-mt5.sh && install-mt5.sh
+COPY docker/mt5/lib.sh /usr/local/lib/gomql5/lib.sh
 COPY docker/mt5/entrypoint.sh docker/mt5/allow-host.sh /usr/local/bin/
 # Drop the optional build-time proxy CA from the final filesystem.
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/allow-host.sh && \
@@ -56,6 +57,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/allow-host.sh && \
 # rebuilt image always runs the EA that matches the Go module.
 COPY mql5/ /opt/gobridge/mql5/
 
+# Lets scripts/mt5ctl.sh and scripts/e2e.sh find terminal containers.
+LABEL org.gomql5.role=mt5
 EXPOSE 5900
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s \
   CMD pgrep -f terminal64.exe >/dev/null || exit 1

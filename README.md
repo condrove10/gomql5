@@ -98,7 +98,23 @@ decode them; see [docs/protocol.md](docs/protocol.md#time).
    `app`.
 3. Attach GoBridge to any chart. Set `InpHost`, `InpPort` and `InpToken`.
 
-## Testing without a terminal
+## Testing
+
+See [docs/TESTING.md](docs/TESTING.md). In short:
+
+```bash
+go test -race ./...
+```
+
+```bash
+scripts/e2e.sh --build
+```
+
+```bash
+scripts/mt5ctl.sh goto experts-log
+```
+
+### Without a terminal
 
 `mt5/mt5test.FakeEA` speaks the EA side of the protocol:
 
@@ -115,7 +131,8 @@ protocol/              framing + message types (Go)
 mt5/                   Server, Terminal, typed API, generated constants
 mt5/mt5test/           fake EA for tests
 mql5/                  GoBridge EA + JSON helper (MQL5)
-docker/mt5/            Wine + MT5 image, entrypoint
+docker/mt5/            Wine + MT5 image, entrypoint, lib.sh (UI helpers), shell tests
+scripts/               e2e.sh (end-to-end smoke test), mt5ctl.sh (look inside the terminal)
 examples/basic/        demo app (also the compose "app" service)
 tools/genconst/        regenerates mt5/constants_gen.go from the Python package
 docs/                  protocol, Docker/Linux notes, roadmap

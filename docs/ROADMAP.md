@@ -19,6 +19,14 @@ This project will be built over several sessions. Each session should:
 | Docker image (`docker/mt5`) | done | built and run in the sandbox: host-network mode (IP and `localhost`) and `docker compose` (service name `app`), fresh and reused volumes; `bridge_connected` helper has a shell test (`docker/mt5/test`) shown to catch the IPv6-less `/proc` bug |
 | Broker login, trading | **not verified** | no account was available. `order_check`/`order_send`/`positions_get`/`history_*`/`copy_ticks_range` have only been tested against FakeEA |
 
+Session 2 added the verification tooling:
+
+* `docs/TESTING.md` (playbook)
+* `scripts/e2e.sh` (one-command end-to-end with evidence)
+* `scripts/mt5ctl.sh` (screenshots, walkthrough, logs)
+* `docker/mt5/lib.sh` (single source of UI coordinates, plus a UI lock)
+* shell tests under `docker/mt5/test`
+
 ## Open items, in priority order
 
 1. **Demo account end to end.** Set `MT5_LOGIN`/`MT5_PASSWORD`/`MT5_SERVER`
@@ -27,7 +35,8 @@ This project will be built over several sessions. Each session should:
    * the login appears in the hello
    * the `copy_ticks_range` and history row counts match the terminal
    * `order_send` open/close retcodes
-2. **Allow-list robustness.**
+2. **Allow-list robustness.** (Tooling to investigate it is in place:
+   `scripts/mt5ctl.sh goto allowlist`, and `docs/TESTING.md`.)
    * `allow-host.sh` drives the UI by screen coordinates. If MetaQuotes moves
      the dialog it breaks; the entrypoint then logs "giving up" after 10
      attempts.
