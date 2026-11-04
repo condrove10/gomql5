@@ -44,10 +44,26 @@ ui_lock() {
 # --- actions ----------------------------------------------------------------
 ui_click() { xdotool mousemove "$1" "$2" click 1; }
 
+# Print the terminal's main window id: the largest visible window of class
+# terminal64 (Wine sets WM_CLASS from the exe). Don't match on the title: it is
+# "MetaTrader 5 - Netting - EURUSD,H1" only while no account is logged in;
+# logged in it becomes "<login>: <server> - Demo Account - …", and a
+# title search then finds nothing (seen with a live FTMO login, 2026-11-04,
+# build 6300: "allow-host: terminal window not found").
+ui_main_window() {
+  local w best="" max=0 area WINDOW X Y WIDTH HEIGHT SCREEN
+  for w in $(xdotool search --onlyvisible --class terminal64 2>/dev/null); do
+    eval "$(xdotool getwindowgeometry --shell "$w" 2>/dev/null)" || continue
+    area=$((${WIDTH:-0} * ${HEIGHT:-0}))
+    if [ "$area" -gt "$max" ]; then max=$area; best=$w; fi
+  done
+  [ -n "$best" ] && echo "$best"
+}
+
 # Wait until the terminal's main window exists (default 120 s).
 ui_wait_main() {
   for _ in $(seq 1 "${1:-120}"); do
-    xdotool search --name "MetaTrader 5" >/dev/null 2>&1 && return 0
+    [ -n "$(ui_main_window)" ] && return 0
     sleep 1
   done
   return 1
@@ -112,7 +128,7 @@ ui_shot() {
 ui_close_terminal() {
   ui_dismiss
   local w
-  w=$(xdotool search --name "MetaTrader 5" 2>/dev/null | head -1 || true)
+  w=$(ui_main_window || true)
   [ -n "$w" ] && xdotool windowfocus "$w" 2>/dev/null || true
   xdotool key alt+F4 2>/dev/null || true
 }

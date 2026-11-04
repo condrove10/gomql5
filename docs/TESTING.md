@@ -167,6 +167,7 @@ Cases where this loop found the real cause:
 | setting lost on `docker stop` | screenshot during stop: LiveUpdate modal | modal swallowed Alt+F4 → Escape first |
 | retries reported "no connection" forever | `ls /proc/net/tcp6` → missing; awk rc=2 | read only existing tables |
 | `wineboot` hung 300 s at build | wineboot without Xvfb worked | Mono/Gecko prompt → `WINEDLLOVERRIDES="mscoree,mshtml="` |
+| live FTMO login (user's host, build 6300): `allow-host: terminal window not found`, EA never connects | renamed the window here to `1515192722: FTMO-Demo - Demo Account - …` → same message | logged-in title drops "MetaTrader 5" → find the window by class `terminal64` (`ui_main_window`); `windows.txt` in the e2e evidence |
 | walkthrough screenshot showed the wrong tab | ran allow-host and `goto` concurrently | UI race → `flock` |
 
 ## 6. Sandbox / CI environment notes
