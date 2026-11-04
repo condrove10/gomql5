@@ -17,9 +17,14 @@
 #   --require-live      fail unless ticks arrive with trade_server_connected=true
 #                       (needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER)
 #   --find-broker NAME  if the account is not connected after --connect-timeout,
-#                       search the broker directory for NAME (File > Open an
-#                       Account) and screenshot the result, then keep waiting
-#   --connect-timeout S seconds to wait for the trade-server connection (default 120)
+#                       log in through File > Open an Account: search NAME (e.g.
+#                       FTMO), Next, "existing trade account", login/password,
+#                       server-list entry 0, 1, … (up to --login-tries) until the
+#                       bridge reports a trade-server connection. Screenshots of
+#                       each server list and form go into the evidence.
+#   --connect-timeout S seconds to wait for the configured login (default 90)
+#   --login-tries N     server-list entries to try (default 5)
+#   --login-wait S      seconds to wait for a connection after each try (default 60)
 #   --keep              leave the terminal running
 #   --out DIR           evidence directory (default e2e-out/goldrec-<timestamp>)
 #
@@ -32,7 +37,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SYM=XAUUSD SOURCE=replay INTERVAL=15s MIN_TICKS=3 RESTART=0 TIMEOUT=300 PORT=7789 KEEP=0 OUT=""
-LIVE=0 FIND_BROKER="" CONNECT_TIMEOUT=120
+LIVE=0 FIND_BROKER="" CONNECT_TIMEOUT=90 LOGIN_TRIES=5 LOGIN_WAIT=60
 while [ $# -gt 0 ]; do
   case $1 in
     --broker-symbol) SYM=$2; shift ;;
@@ -46,6 +51,8 @@ while [ $# -gt 0 ]; do
     --require-live) LIVE=1 ;;
     --find-broker) FIND_BROKER=$2; shift ;;
     --connect-timeout) CONNECT_TIMEOUT=$2; shift ;;
+    --login-tries) LOGIN_TRIES=$2; shift ;;
+    --login-wait) LOGIN_WAIT=$2; shift ;;
     --out) OUT=$2; shift ;;
     -h | --help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) echo "goldrec-e2e: unknown option $1" >&2; exit 2 ;;
@@ -117,7 +124,10 @@ have_obs() { [ "$(lines "$DATA/sentiment.jsonl")" -ge 2 ]; }
 count() { local n; n=$(grep -c -- "$1" "$2" 2>/dev/null); echo "${n:-0}"; }
 connects() { [ "$(count '"kind":"terminal_connected"' "$DATA/events.jsonl")" -ge "$1" ]; }
 have_live_ticks() { [ "$(count '"trade_server_connected":true' "$DATA/prices.jsonl")" -ge "$1" ]; }
-trade_connected() { grep -q '"kind":"terminal_info".*"trade_server_connected":true\|"trade_server_connected":true.*"kind":"terminal_info"' "$DATA/events.jsonl" 2>/dev/null; }
+# The LATEST terminal_info event says connected (goldrec writes one per EA
+# connection and on every change; an earlier "true" says nothing after a
+# restart or an account switch).
+trade_connected() { grep '"kind":"terminal_info"' "$DATA/events.jsonl" 2>/dev/null | tail -1 | grep -q '"trade_server_connected":true'; }
 # Echo the terminal's Network journal lines (login progress) once each.
 SEEN_NET=0
 show_network() {
@@ -129,32 +139,51 @@ show_network() {
 
 say "goldrec on 127.0.0.1:$PORT (source=$SOURCE, broker symbol $SYM); terminal $NAME"
 start_terminal
-if [ $LIVE = 1 ]; then
-  [ -n "${MT5_LOGIN:-}" ] || { say "FAIL: --require-live needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER"; exit 1; }
-  wait_for "EA connection" connects 1
+# ensure_live LIVE_TICKS_NEEDED: wait for the configured login; if the terminal
+# doesn't reach a trade server (a broker the stock terminal doesn't know falls
+# back to MetaQuotes-Demo: "Invalid account"), log in through File > Open an
+# Account for $FIND_BROKER, trying server-list entries 0..LOGIN_TRIES-1 until
+# the bridge reports a trade-server connection. Then wait for live ticks.
+ensure_live() {
+  local need=$1 deadline idx
+  [ -n "${MT5_LOGIN:-}" ] && [ -n "${MT5_PASSWORD:-}" ] || { say "FAIL: --require-live needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER"; exit 1; }
   deadline=$((SECONDS + CONNECT_TIMEOUT))
   while [ $SECONDS -lt $deadline ] && ! trade_connected; do show_network; sleep 5; done
   if ! trade_connected && [ -n "$FIND_BROKER" ]; then
-    say "account not connected after ${CONNECT_TIMEOUT}s: searching the broker directory for '$FIND_BROKER'"
-    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" find-broker "$FIND_BROKER" 45 || say "find-broker failed"
-    say "      screenshot: $OUT/find-broker-$FIND_BROKER.png"
+    for ((idx = 0; idx < LOGIN_TRIES; idx++)); do
+      say "not connected to a trade server: logging in via File > Open an Account ('$FIND_BROKER', server list entry $idx)"
+      scripts/mt5ctl.sh -c "$NAME" -o "$OUT" login-broker "$FIND_BROKER" "$idx" || say "login-broker failed"
+      say "      screenshots: $OUT/login-$idx-servers.png, $OUT/login-$idx-form.png"
+      deadline=$((SECONDS + LOGIN_WAIT))
+      while [ $SECONDS -lt $deadline ] && ! trade_connected; do show_network; sleep 5; done
+      trade_connected && break
+    done
   fi
   live_or_net() { show_network; trade_connected; }
   wait_for "trade-server connection (account $MT5_LOGIN on ${MT5_SERVER:-?})" live_or_net
   say "trade server connected"
-  wait_for "$MIN_TICKS live $SYM ticks" have_live_ticks "$MIN_TICKS"
+  wait_for "$need live $SYM ticks" have_live_ticks "$need"
+}
+if [ $LIVE = 1 ]; then
+  wait_for "EA connection" connects 1
+  ensure_live "$MIN_TICKS"
 fi
 wait_for "$MIN_TICKS $SYM ticks" have_ticks "$MIN_TICKS"
 wait_for "2 positioning observations" have_obs
 if [ $RESTART = 1 ]; then
   before=$(lines "$DATA/prices.jsonl")
-  say "restarting terminal (had $before ticks)"
+  before_live=$(count '"trade_server_connected":true' "$DATA/prices.jsonl")
+  before_conn=$(count '"kind":"terminal_connected"' "$DATA/events.jsonl")
+  say "restarting terminal (had $before ticks, $before_conn EA connections)"
   docker stop -t 30 "$NAME" >/dev/null
   wait_for "disconnect event" grep -q '"kind":"terminal_disconnected"' "$DATA/events.jsonl"
   gone() { ! docker inspect "$NAME" >/dev/null 2>&1; }
   wait_for "old container removed" gone
   start_terminal
-  wait_for "reconnect" connects 2
+  wait_for "reconnect" connects $((before_conn + 1))
+  if [ $LIVE = 1 ]; then
+    ensure_live $((before_live + 1)) # a fresh container starts logged out again
+  fi
   wait_for "ticks after reconnect" have_ticks $((before + 1))
 fi
 sleep 2 # let one flush/status cycle pass

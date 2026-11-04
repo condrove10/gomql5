@@ -29,6 +29,9 @@ echo '{"kind":"terminal_info","trade_server_connected":false}' >>"$DATA/events.j
 check "trade server not connected" false trade_connected
 echo '{"kind":"terminal_info","trade_server_connected":true}' >>"$DATA/events.jsonl"
 check "trade server connected" true trade_connected
+echo '{"kind":"terminal_connected","seq":5}' >>"$DATA/events.jsonl"
+echo '{"kind":"terminal_info","trade_server_connected":false}' >>"$DATA/events.jsonl"
+check "after a restart the latest state counts (not connected)" false trade_connected
 echo '{"bid":1,"trade_server_connected":false}' >"$DATA/prices.jsonl"
 check "cached ticks are not live ticks" false have_live_ticks 1
 echo '{"bid":2,"trade_server_connected":true}' >>"$DATA/prices.jsonl"
