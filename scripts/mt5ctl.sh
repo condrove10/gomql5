@@ -17,6 +17,10 @@
 #   dismiss                   Escape twice (account wizard, LiveUpdate prompt, open dialogs)
 #   find-broker NAME [WAIT]   File > Open an Account, search the broker directory for NAME,
 #                             wait WAIT s (default 30), screenshot the result, close the wizard
+#   login-broker NAME [INDEX] log in with the container's MT5_LOGIN/MT5_PASSWORD through
+#                             File > Open an Account: search NAME ("" = first listed company),
+#                             Next, existing account, server-list entry INDEX (default 0), Finish.
+#                             Screenshots: login-INDEX-servers.png, login-INDEX-form.png
 #
 # UI-driving commands (goto, dismiss, click, key, type) hold the container's UI
 # lock, so they wait while allow-host.sh is clicking; `shot` does not.
@@ -110,6 +114,19 @@ case "$cmd" in
     [ $# -ge 1 ] || die "find-broker NAME [WAIT]"
     docker exec "$C" bash -c 'source /usr/local/lib/gomql5/lib.sh; ui_lock 120 && ui_find_company "$1" && sleep "$2" && ui_shot /tmp/mt5ctl.png "$UI_CROP_ACCOUNT" && ui_dismiss' _ "$1" "${2:-30}"
     fetch "find-broker-$1"
+    ;;
+  login-broker)
+    [ $# -ge 1 ] || die "login-broker NAME [INDEX]"
+    idx="${2:-0}"
+    # MT5_LOGIN/MT5_PASSWORD are read from the container's own environment, so
+    # they never appear on this command line.
+    docker exec "$C" bash -c 'source /usr/local/lib/gomql5/lib.sh; ui_lock 180 && ui_login_existing "$1" "$2"' _ "$1" "$idx"
+    rc=$?
+    mkdir -p "$OUT"
+    docker cp -q "$C:/tmp/mt5ctl-servers.png" "$OUT/login-$idx-servers.png" 2>/dev/null || true
+    docker cp -q "$C:/tmp/mt5ctl-login.png" "$OUT/login-$idx-form.png" 2>/dev/null || true
+    echo "$OUT/login-$idx-servers.png $OUT/login-$idx-form.png"
+    exit $rc
     ;;
   click) [ $# -eq 2 ] || die "click X Y"; cxui "ui_click $1 $2" ;;
   key) [ $# -ge 1 ] || die "key KEYS..."; cxui "xdotool key $*" ;;

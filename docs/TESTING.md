@@ -168,6 +168,8 @@ Cases where this loop found the real cause:
 | retries reported "no connection" forever | `ls /proc/net/tcp6` → missing; awk rc=2 | read only existing tables |
 | `wineboot` hung 300 s at build | wineboot without Xvfb worked | Mono/Gecko prompt → `WINEDLLOVERRIDES="mscoree,mshtml="` |
 | live FTMO login (user's host, build 6300): `allow-host: terminal window not found`, EA never connects | renamed the window here to `1515192722: FTMO-Demo - Demo Account - …` → same message | logged-in title drops "MetaTrader 5" → find the window by class `terminal64` (`ui_main_window`); `windows.txt` in the e2e evidence |
+| `MT5_SERVER=FTMO-Demo`: journal `authorization on MetaQuotes-Demo failed (Invalid account)` | user's screenshots: the directory search finds "FTMO Global Markets Ltd" | stock terminal doesn't know the server and falls back to MetaQuotes-Demo → `ui_login_existing` (File › Open an Account › company › Next › existing account › server-list entry N › Finish); `goldrec-e2e.sh --require-live --find-broker FTMO` tries entries until the bridge reports a trade-server connection |
+| page 2 of that wizard ignored typed login/password 6 s after Next | same steps on a page left open for a minute worked | the page settles slowly → wait 20 s, fill twice (Ctrl+A makes it idempotent) |
 | walkthrough screenshot showed the wrong tab | ran allow-host and `goto` concurrently | UI race → `flock` |
 
 ## 6. Sandbox / CI environment notes
