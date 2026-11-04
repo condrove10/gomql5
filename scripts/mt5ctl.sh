@@ -15,6 +15,8 @@
 #   goto options              open Tools > Options > Experts, screenshot it, close it
 #   goto allowlist            same, cropped to the allowed-URL list
 #   dismiss                   Escape twice (account wizard, LiveUpdate prompt, open dialogs)
+#   find-broker NAME [WAIT]   File > Open an Account, search the broker directory for NAME,
+#                             wait WAIT s (default 30), screenshot the result, close the wizard
 #
 # UI-driving commands (goto, dismiss, click, key, type) hold the container's UI
 # lock, so they wait while allow-host.sh is clicking; `shot` does not.
@@ -104,6 +106,11 @@ case "$cmd" in
     esac
     ;;
   dismiss) cxui 'ui_dismiss' ;;
+  find-broker)
+    [ $# -ge 1 ] || die "find-broker NAME [WAIT]"
+    docker exec "$C" bash -c 'source /usr/local/lib/gomql5/lib.sh; ui_lock 120 && ui_find_company "$1" && sleep "$2" && ui_shot /tmp/mt5ctl.png "$UI_CROP_ACCOUNT" && ui_dismiss' _ "$1" "${2:-30}"
+    fetch "find-broker-$1"
+    ;;
   click) [ $# -eq 2 ] || die "click X Y"; cxui "ui_click $1 $2" ;;
   key) [ $# -ge 1 ] || die "key KEYS..."; cxui "xdotool key $*" ;;
   type) [ $# -ge 1 ] || die "type TEXT"; docker exec "$C" bash -c 'source /usr/local/lib/gomql5/lib.sh; ui_lock 120 && xdotool type --delay 50 "$1"' _ "$*" ;;

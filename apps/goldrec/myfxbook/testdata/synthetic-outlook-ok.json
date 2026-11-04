@@ -1,0 +1,3 @@
+{"error":false,"message":"","general":{"demoAccountsPercentage":20,"realAccountsPercentage":80},"symbols":[
+{"name":"EURUSD","shortPercentage":60,"longPercentage":40,"shortVolume":1200.5,"longVolume":800.25,"longPositions":4000,"shortPositions":6000,"totalPositions":10000,"avgShortPrice":1.0812,"avgLongPrice":1.0950},
+{"name":"XAUUSD","shortPercentage":38,"longPercentage":62,"shortVolume":512.34,"longVolume":836.10,"longPositions":7311,"shortPositions":4180,"totalPositions":11491,"avgShortPrice":3990.12,"avgLongPrice":4031.55}]}
