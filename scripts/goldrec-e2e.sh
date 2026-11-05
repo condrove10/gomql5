@@ -448,14 +448,14 @@ budget_fail() {
 # ensure_live CONNS NEED: the live classifier, for the container started last, whose
 # EA connection is number CONNS or later. Polls, and asks in order: S1 the EA connected;
 # S2 the identity: goldrec -check-live on the latest connection (L1, L2), then the window
-# title (L3); S3 the symbol; S4 the first fresh record, all by LIVE_BUDGET seconds from the
+# title (L3), which must also say Read Only (rc 31); S3 the symbol; S4 the first fresh record, all by LIVE_BUDGET seconds from the
 # start, and NEED fresh records (L4, L5, L6) by TIMEOUT. Definite answers end the run
 # at once: another login or server (-check-live holds a server for 3 polls, so a late
 # switch passes), a rejection in the journal, stale ticks, a dead recorder or terminal.
 # What is merely missing is judged at its deadline, in that same order (budget_fail).
 # A journal fallback is only a hint until then: the account is what shows it held.
 ensure_live() {
-  local conns=$1 need=$2 conn el why ro journal="" deadline rem
+  local conns=$1 need=$2 conn el why journal="" deadline rem
   [ -n "${MT5_LOGIN:-}" ] && [ -n "${MT5_PASSWORD:-}" ] || live_fail env_missing 10 "--require-live needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER"
   while :; do
     show_network # (slow: it reads the journal; so is the login_failure check below)
@@ -476,8 +476,9 @@ ensure_live() {
       if account_holds; then
         if [ -z "$T_TITLE" ] && title_holds; then
           T_TITLE=$el
-          case $MAIN_TITLE in *'Read Only'*) ro=yes ;; *) ro=no ;; esac
-          say "identity holds: account_info and the window title say $EXPECT_SERVER (${el}s, read_only=$ro)"
+          # Read-only guard (section 4, U): the title shows Read Only under the read-only password (E1).
+          case $MAIN_TITLE in *'Read Only'*) ;; *) live_fail not_read_only 31 "the window title lacks 'Read Only': $MAIN_TITLE; ${el}s since the container started" ;; esac
+          say "identity holds: account_info and the window title say $EXPECT_SERVER (${el}s, read_only=yes)"
         fi
         if [ -n "$T_TITLE" ]; then
           if [ "$LC_REASON" = stale_ticks ]; then live_fail stale_ticks 29 "$LC_LINE; ${el}s since the container started; phase: $(phase)"; fi

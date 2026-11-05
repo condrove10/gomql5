@@ -62,6 +62,7 @@ run() {
     scripts/mt5ctl.sh() { # -c NAME logs terminal N | -c NAME exec CMD
       case $3 in
         exec)
+          printf '%s\n' "$4" >>"$OUT/title-cmd"
           if [ -n "${TITLE_AT:-}" ] && ! at "$TITLE_AT"; then echo "12345678 - $EXPECT_SERVER - Netting"
           else echo "${TITLE-$GOOD_TITLE}"; fi ;;
         *) cat "$J" ;;
@@ -104,6 +105,7 @@ run() {
   sed 's/^/timings.txt: /' "$o/timings.txt" 2>/dev/null
   sed 's/^/result.txt: /' "$o/result.txt" 2>/dev/null
   sed 's/^/check-args: /' "$o/check-args" 2>/dev/null
+  sed 's/^/title-cmd: /' "$o/title-cmd" 2>/dev/null
 }
 has() { # name, output, substring
   if [[ "$2" == *"$3"* ]]; then echo "ok   $1"; else echo "FAIL $1: no '$3' in: $(echo "$2" | tr '\n' '|')"; fail=1; fi
@@ -126,6 +128,8 @@ has "within budget: timings printed" "$out" "timings (start): ea_connected=42s t
 has "within budget: timings.txt" "$out" "timings.txt: start: ea_connected=42s trade_server=60s first_live_tick=63s (budget 120s)"
 has "within budget: the verdict is asked about the expected account and connection 1" "$out" "check-args: -expect-login 12345678 -expect-server FTMO-Demo -min-fresh 1 -conn 1"
 has "within budget: says what the title showed" "$out" "read_only=yes"
+has "title is read with ui_main_window, through exec" "$out" 'title-cmd: w=$(ui_main_window) && xdotool getwindowname "$w"'
+hasnt "title is read without the UI lock" "$out" "ui_lock"
 
 # S1
 out=$(run -1 -1 -1)
@@ -216,6 +220,11 @@ failed "no title to read" "$out" identity_conflict 26
 out=$(TITLE_AT=50 run 10 20 30)
 has "a title that catches up passes" "$out" "exit=0"
 has "a title that catches up: the first tick counts from then" "$out" "first_live_tick=51s"
+# The read-only guard (rc 31): a title without Read Only fails at the identity step.
+out=$(TITLE="12345678 - FTMO-Demo: Demo Account - Hedge" run 10 20 30)
+failed "title without Read Only" "$out" not_read_only 31
+has "title without Read Only: quotes the title" "$out" "the window title lacks 'Read Only': <login> - FTMO-Demo: Demo Account - Hedge"
+hasnt "title without Read Only: identity not said to hold" "$out" "identity holds"
 
 # S3: the symbol, never before identity.
 printf '%s\n' '{"at":"2026-11-05T12:00:00Z","broker_symbol":"XAUUSD","candidates":["XAUUSD.r","XAUEUR"],"conn":1,"error":"mt5 error -4: unknown symbol","kind":"quality","what":"broker_symbol_unavailable"}' >"$T/ev-symbol.jsonl"
