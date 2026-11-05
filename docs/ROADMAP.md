@@ -46,6 +46,8 @@ Session 4 (2026-11-04):
   sessions) and `mt5ctl find-broker` (since removed with the account wizard:
   logins are config-only, see `docs/goldrec.md` §6).
 
+See `docs/ALTERNATIVES.md` for the evaluated headless/config-only options (DLL bridge, file bridge, Wine without X, MCP, `Server=host:port`).
+
 ## Open items, in priority order
 
 0. **goldrec go-live** (needs credentials and a network that reaches the
