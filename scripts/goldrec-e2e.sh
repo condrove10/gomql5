@@ -15,16 +15,8 @@
 #   --timeout S         seconds per wait (default 300)
 #   --port P            (default 7789)
 #   --require-live      fail unless ticks arrive with trade_server_connected=true
-#                       (needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER)
-#   --find-broker NAME  if the account is not connected after --connect-timeout,
-#                       log in through File > Open an Account: search NAME (e.g.
-#                       FTMO), Next, "existing trade account", login/password,
-#                       server-list entry 0, 1, … (up to --login-tries) until the
-#                       bridge reports a trade-server connection. Screenshots of
-#                       each server list and form go into the evidence.
-#   --connect-timeout S seconds to wait for the configured login (default 90)
-#   --login-tries N     server-list entries to try (default 12; stops early at the end of the list)
-#   --login-wait S      max seconds per try (default 60; moves on as soon as the journal shows the try failed)
+#                       (needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER); fails at once when
+#                       the journal shows the login cannot work (see login_failure)
 #   --servers-dat FILE  install FILE as the terminal's config/servers.dat (a desktop MT5's
 #                       copy that knows the broker): a config login to a named server
 #                       (MT5_SERVER=FTMO-Demo) then works without any UI
@@ -35,7 +27,9 @@
 #   --out DIR           evidence directory (default e2e-out/goldrec-<timestamp>)
 #
 # Broker account: MT5_LOGIN/MT5_PASSWORD/MT5_SERVER are passed to the terminal
-# when set (otherwise it runs without a trade server: cached quotes only).
+# when set (otherwise it runs without a trade server: cached quotes only). The
+# login is config-only (no UI): MT5_SERVER must be "address:port" or a name
+# listed in the terminal's config/servers.dat (--servers-dat / --state).
 # --source api needs MYFXBOOK_EMAIL/MYFXBOOK_PASSWORD.
 #
 # Exit 0 = PASS. Requires gomql5/mt5:local (build with scripts/e2e.sh --build).
@@ -43,7 +37,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SYM=XAUUSD SOURCE=replay INTERVAL=15s MIN_TICKS=3 RESTART=0 TIMEOUT=300 PORT=7789 KEEP=0 OUT=""
-LIVE=0 FIND_BROKER="" CONNECT_TIMEOUT=90 LOGIN_TRIES=12 LOGIN_WAIT=60 SERVERS_DAT="" STATE_DIR=""
+LIVE=0 SERVERS_DAT="" STATE_DIR=""
 while [ $# -gt 0 ]; do
   case $1 in
     --broker-symbol) SYM=$2; shift ;;
@@ -55,10 +49,6 @@ while [ $# -gt 0 ]; do
     --port) PORT=$2; shift ;;
     --keep) KEEP=1 ;;
     --require-live) LIVE=1 ;;
-    --find-broker) FIND_BROKER=$2; shift ;;
-    --connect-timeout) CONNECT_TIMEOUT=$2; shift ;;
-    --login-tries) LOGIN_TRIES=$2; shift ;;
-    --login-wait) LOGIN_WAIT=$2; shift ;;
     --servers-dat) SERVERS_DAT=$2; shift ;;
     --state) STATE_DIR=$2; shift ;;
     --out) OUT=$2; shift ;;
@@ -155,78 +145,41 @@ show_network() {
 
 say "goldrec on 127.0.0.1:$PORT (source=$SOURCE, broker symbol $SYM); terminal $NAME"
 start_terminal
-# ensure_live LIVE_TICKS_NEEDED: wait for the configured login; if the terminal
-# doesn't reach a trade server (a broker the stock terminal doesn't know falls
-# back to MetaQuotes-Demo: "Invalid account"), log in through File > Open an
-# Account for $FIND_BROKER, trying server-list entries 0..LOGIN_TRIES-1 until
-# the bridge reports a trade-server connection. Then wait for live ticks.
-# Journal parsing (stdin = terminal journal lines). A failed wizard login logs
-#   <tab>Network<tab>'<login>': authorization on FTMO-Server4 failed (Invalid account)
-# which names the server that list entry pointed at; the list order is the
-# broker's (seen: Server4, Server5, Server, Server3, Server2, Demo), not alphabetical.
-failed_auth_count() { grep -cE $'\tNetwork\t.*authorization on [^ ]+ failed' || true; }
-# (`|| true`: no match is normal, and this script runs under set -euo pipefail.)
-last_failed_server() { { grep -oE $'\tNetwork\t.*authorization on [^ ]+ failed' || true; } | tail -1 | sed -E 's/.*authorization on ([^ ]+) failed/\1/'; }
-journal() { scripts/mt5ctl.sh -c "$NAME" logs terminal 5000 2>/dev/null; }
-LOGIN_START=0 # after a success, a restart starts from the entry that worked
+# login_failure SERVER (stdin = terminal journal): print why a config login to
+# SERVER cannot succeed and return 0, or return 1 when the journal shows no such
+# sign (yet). Two shapes, both from real runs (testdata/journal-ftmo-wizard.txt):
+#   * a server name the terminal doesn't know (not in config/servers.dat) falls
+#     back to MetaQuotes-Demo: "authorization on MetaQuotes-Demo failed (Invalid account)";
+#   * the server itself rejects the account: "authorization on SERVER failed (...)".
+SERVERS_DAT_HINT="provide a servers.dat that lists it (MT5_SERVERS_DAT=/path/to/servers.dat, copied from a desktop MT5 that has logged in to the broker once: File > Open Data Folder > config/servers.dat) or set MT5_SERVER=address:port"
+login_failure() {
+  local srv=$1 net line
+  net=$(grep -E $'\tNetwork\t' || true) # (`|| true`: no match is normal under set -euo pipefail)
+  if [ "$srv" != MetaQuotes-Demo ] && line=$(printf '%s\n' "$net" | grep -E "(authorization on|authorized on) MetaQuotes-Demo( |$)" | tail -1) && [ -n "$line" ]; then
+    echo "the terminal does not know MT5_SERVER=$srv and fell back to MetaQuotes-Demo (journal: ${line##*$'\t'}): $SERVERS_DAT_HINT"
+    return 0
+  fi
+  if [ -n "$srv" ] && line=$(printf '%s\n' "$net" | grep -F "authorization on $srv failed" | tail -1) && [ -n "$line" ]; then
+    echo "$srv rejected the login (journal: ${line##*$'\t'}): check MT5_LOGIN/MT5_PASSWORD; if they are right, the servers.dat entry for $srv may be stale: $SERVERS_DAT_HINT"
+    return 0
+  fi
+  return 1
+}
+# ensure_live LIVE_TICKS_NEEDED: wait for the config login to reach the trade
+# server, failing at once when the journal shows it cannot; then wait for live ticks.
 ensure_live() {
-  local need=$1 deadline idx before srv prev=""
+  local need=$1
   [ -n "${MT5_LOGIN:-}" ] && [ -n "${MT5_PASSWORD:-}" ] || { say "FAIL: --require-live needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER"; exit 1; }
-  deadline=$((SECONDS + CONNECT_TIMEOUT))
-  while [ $SECONDS -lt $deadline ] && ! trade_connected; do show_network; sleep 5; done
-  # First choice: select MT5_SERVER by name in the wizard's server list
-  # (window messages, docker/mt5/tools/wincombo.c). Positions are only the
-  # fallback when that helper can't run (e.g. an older image).
-  if ! trade_connected && [ -n "$FIND_BROKER" ] && [ -n "${MT5_SERVER:-}" ] && [ "$LOGIN_START" = 0 ]; then
-    local rc=0
-    before=$(journal | failed_auth_count)
-    say "not connected to a trade server: logging in via File > Open an Account ('$FIND_BROKER', server '$MT5_SERVER' selected by name)"
-    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" login-broker "$FIND_BROKER" name >/dev/null || rc=$?
-    say "      evidence: login-name-servers.txt, login-name-servers.png, login-name-form.png"
-    if [ $rc = 3 ]; then
-      say "FAIL: '$MT5_SERVER' is not in $FIND_BROKER's server list: $(grep -E '^\s+\[' "$OUT/login-name-servers.txt" 2>/dev/null | sed -E 's/^\s+\[[0-9]+\] //' | paste -sd, -)"; exit 1
-    elif [ $rc != 0 ]; then
-      say "      selection by name failed (exit $rc); falling back to list positions"
-    else
-      deadline=$((SECONDS + LOGIN_WAIT))
-      while [ $SECONDS -lt $deadline ] && ! trade_connected; do
-        show_network
-        [ "$(journal | failed_auth_count)" -gt "$before" ] && break
-        sleep 3
-      done
-      if ! trade_connected && [ "$(journal | last_failed_server)" = "$MT5_SERVER" ]; then
-        say "FAIL: $MT5_SERVER itself rejected account $MT5_LOGIN (Invalid account): check MT5_LOGIN/MT5_PASSWORD"; exit 1
-      fi
+  live_or_fail() {
+    local why
+    show_network
+    trade_connected && return 0
+    if why=$(scripts/mt5ctl.sh -c "$NAME" logs terminal 5000 2>/dev/null | login_failure "${MT5_SERVER:-}"); then
+      say "FAIL: $why"; exit 1
     fi
-  fi
-  if ! trade_connected && [ -n "$FIND_BROKER" ]; then
-    for ((idx = LOGIN_START; idx < LOGIN_START + LOGIN_TRIES; idx++)); do
-      before=$(journal | failed_auth_count)
-      say "not connected to a trade server: logging in via File > Open an Account ('$FIND_BROKER', server list entry $idx)"
-      scripts/mt5ctl.sh -c "$NAME" -o "$OUT" login-broker "$FIND_BROKER" "$idx" >/dev/null || say "login-broker failed"
-      say "      screenshots: login-$idx-servers.png, login-$idx-form.png"
-      # Wait for a trade-server connection, or move on as soon as this
-      # attempt's "authorization on X failed" shows up in the journal.
-      deadline=$((SECONDS + LOGIN_WAIT))
-      while [ $SECONDS -lt $deadline ] && ! trade_connected; do
-        show_network
-        [ "$(journal | failed_auth_count)" -gt "$before" ] && break
-        sleep 3
-      done
-      if trade_connected; then LOGIN_START=$idx; break; fi
-      srv=$(journal | last_failed_server)
-      if [ -n "$srv" ] && [ "$srv" = "${MT5_SERVER:-}" ]; then
-        say "FAIL: $srv itself rejected account $MT5_LOGIN (Invalid account): check MT5_LOGIN/MT5_PASSWORD"; exit 1
-      fi
-      if [ -n "$srv" ] && [ "$srv" = "$prev" ]; then
-        say "FAIL: end of $FIND_BROKER's server list reached ($srv again) without '${MT5_SERVER:-?}'; see login-*-servers.png"; exit 1
-      fi
-      [ -n "$srv" ] && say "      entry $idx is $srv (not ${MT5_SERVER:-?}); next entry"
-      prev=$srv
-    done
-  fi
-  live_or_net() { show_network; trade_connected; }
-  wait_for "trade-server connection (account $MT5_LOGIN on ${MT5_SERVER:-?})" live_or_net
+    return 1
+  }
+  wait_for "trade-server connection (account $MT5_LOGIN on ${MT5_SERVER:-?})" live_or_fail
   say "trade server connected"
   wait_for "$need live $SYM ticks" have_live_ticks "$need"
 }

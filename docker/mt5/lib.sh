@@ -22,23 +22,11 @@ UI_TOOLBOX_TAB_JOURNAL="472 993"  # bottom Toolbox: "Journal" tab (terminal log)
 # and Experts/Journal move right (measured on a user's FTMO-Demo screenshot, build 6300).
 UI_TOOLBOX_TAB_EXPERTS_ACCOUNT="656 993"
 UI_TOOLBOX_TAB_JOURNAL_ACCOUNT="712 993"
-UI_MENU_FILE="20 41"              # menu bar: File
-UI_MENU_FILE_OPEN_ACCOUNT="75 344" # File > Open an Account (company search wizard)
-UI_ACCOUNT_SEARCH_FIELD="570 360" # wizard: "add new company like 'CompanyName'..." field
-UI_ACCOUNT_SEARCH_FIND="903 360"  # wizard: "Find your company" button
-UI_ACCOUNT_FIRST_ROW="600 400"    # wizard: first company row (a found company is pre-selected)
-UI_ACCOUNT_NEXT="830 765"         # wizard: "Next >"
-UI_ACCOUNT_EXISTING="343 599"     # page 2: "Connect with an existing trade account" radio
-UI_ACCOUNT_LOGIN="490 626"        # page 2: Login field
-UI_ACCOUNT_PASSWORD="490 653"     # page 2: Password field
-UI_ACCOUNT_SERVER="540 682"       # page 2: Server pick-list (not editable; lists the company's servers)
-UI_ACCOUNT_FINISH="840 765"       # page 2: "Finish"
 
 # --- crop regions for screenshots (ImageMagick geometry WxH+X+Y) ---------------
 UI_CROP_OPTIONS="620x380+350+395"  # whole Options dialog
 UI_CROP_URLLIST="620x140+350+590"  # "Allow WebRequest for listed URL" + list
 UI_CROP_TOOLBOX="1280x320+0+680"   # Toolbox (Experts/Journal rows)
-UI_CROP_ACCOUNT="700x520+296+270"  # File > Open an Account wizard
 
 # --- locking ----------------------------------------------------------------
 # Only one actor may drive the UI at a time: allow-host.sh (and its retries),
@@ -104,100 +92,6 @@ ui_options_add_url() {
 }
 
 ui_options_ok() { ui_click $UI_OPTIONS_OK; sleep 1; }
-
-# Search the MetaQuotes broker directory for a company (e.g. "FTMO") in
-# File > Open an Account. A successful search adds that company's servers
-# (e.g. FTMO-Demo) to the terminal, which a config login to an unknown server
-# needs. Leaves the wizard open on the result list (screenshot it, then
-# ui_dismiss); it never proceeds to open an account. Click and type are one
-# xdotool call: with no window manager, focus is lost between calls (observed:
-# separate calls typed nothing). Verified up to the search starting (field
-# greyed out) on build 6295; the result list is unverified because the
-# sandbox could not reach the directory.
-ui_find_company() {
-  ui_dismiss
-  ui_click $UI_MENU_FILE; sleep 2
-  ui_click $UI_MENU_FILE_OPEN_ACCOUNT; sleep 4
-  # shellcheck disable=SC2086
-  xdotool mousemove ${UI_ACCOUNT_SEARCH_FIELD} click 1 sleep 0.5 type --delay 80 "$1"
-  sleep 1
-  ui_click $UI_ACCOUNT_SEARCH_FIND
-}
-
-# Log in to an existing account through File > Open an Account:
-#   ui_login_existing COMPANY INDEX [SEARCH_WAIT]
-# COMPANY is searched in the broker directory (empty: use the first listed
-# company, i.e. MetaQuotes); INDEX picks the INDEX-th entry (0 = first) of the
-# company's server list, which is a pick-list that ignores typed names (Wine's
-# type-ahead matches one letter only). INDEX "name" selects $MT5_SERVER by name
-# through window messages instead (ui_wincombo) and returns 3 if it is not
-# listed; /tmp/mt5ctl-servers.txt then holds the list as text. Login and password come from
-# $MT5_LOGIN / $MT5_PASSWORD (the container env); nothing is echoed.
-# Writes /tmp/mt5ctl-servers.png (the open server list) and
-# /tmp/mt5ctl-login.png (the filled form; the password field is masked).
-# Why: a config login (Server=FTMO-Demo) to a server the stock terminal does
-# not know falls back to MetaQuotes-Demo ("authorization on MetaQuotes-Demo
-# failed (Invalid account)", user's run 2026-11-04); this path makes the
-# terminal learn the company's servers first. Page 2 coordinates measured on
-# build 6295 with MetaQuotes Ltd.; with a found company they are unverified.
-ui_login_existing() {
-  local company=$1 index=${2:-0} wait=${3:-20} i
-  [ -n "${MT5_LOGIN:-}" ] && [ -n "${MT5_PASSWORD:-}" ] || { echo "ui_login_existing: MT5_LOGIN/MT5_PASSWORD not set" >&2; return 1; }
-  [ "$company" = - ] && company="" # "-": first listed company (testing without the directory)
-  if [ -n "$company" ]; then
-    ui_find_company "$company"
-    sleep "$wait" # the directory search; the found company ends up selected
-  else
-    ui_dismiss
-    ui_click $UI_MENU_FILE; sleep 2
-    ui_click $UI_MENU_FILE_OPEN_ACCOUNT; sleep 4
-    ui_click $UI_ACCOUNT_FIRST_ROW; sleep 1
-  fi
-  ui_click $UI_ACCOUNT_NEXT
-  # Page 2 ignores input for a while after it appears (observed: typed
-  # login/password and the server click were dropped 6 s after Next, and
-  # worked once the page had settled). Wait, then fill twice: Ctrl+A makes
-  # re-typing idempotent, so a dropped first attempt is harmless.
-  sleep "${UI_ACCOUNT_PAGE_WAIT:-20}"
-  ui_click $UI_ACCOUNT_EXISTING; sleep 0.5
-  for i in 1 2; do
-    # shellcheck disable=SC2086
-    xdotool mousemove ${UI_ACCOUNT_LOGIN} click 1 sleep 0.3 key ctrl+a type --delay 60 "$MT5_LOGIN"
-    sleep 0.5
-    # shellcheck disable=SC2086
-    xdotool mousemove ${UI_ACCOUNT_PASSWORD} click 1 sleep 0.3 key ctrl+a type --delay 60 "$MT5_PASSWORD"
-    sleep 1.5
-  done
-  if [ "$index" = name ]; then
-    # Select $MT5_SERVER by name through window messages (CB_FINDSTRINGEXACT /
-    # CB_SETCURSEL + CBN_SELCHANGE, see docker/mt5/tools/wincombo.c): no
-    # guessing by position. The full list goes into the evidence either way.
-    ui_wincombo list >/tmp/mt5ctl-servers.txt 2>&1
-    ui_click $UI_ACCOUNT_SERVER; sleep 1.5; ui_shot /tmp/mt5ctl-servers.png "$UI_CROP_ACCOUNT"
-    xdotool key Escape; sleep 0.5                  # close the list without changing it
-    if ! ui_wincombo select "${MT5_SERVER:-}" >>/tmp/mt5ctl-servers.txt 2>&1; then
-      ui_shot /tmp/mt5ctl-login.png "$UI_CROP_ACCOUNT"
-      ui_dismiss
-      return 3                                     # not in the list: caller falls back to indexes
-    fi
-    sleep 1
-  else
-    ui_click $UI_ACCOUNT_SERVER; sleep 1.5        # opens the list
-    xdotool key Home; sleep 0.3
-    for ((i = 0; i < index; i++)); do xdotool key Down; sleep 0.2; done
-    ui_shot /tmp/mt5ctl-servers.png "$UI_CROP_ACCOUNT"
-    xdotool key Return; sleep 1                    # closes the list on the highlighted entry
-  fi
-  ui_shot /tmp/mt5ctl-login.png "$UI_CROP_ACCOUNT"
-  ui_click $UI_ACCOUNT_FINISH
-}
-
-# Run the combo-box helper (list | select TEXT) under the terminal's Wine.
-ui_wincombo() {
-  local exe=${GOMQL5_WINCOMBO:-/usr/local/lib/gomql5/wincombo.exe}
-  [ -f "$exe" ] || { echo "wincombo: $exe missing" >&2; return 4; }
-  (cd /tmp && timeout 60 wine "$exe" "$@" 2>/dev/null)
-}
 
 # True when an account is authorized: the main window title then reads
 # "<login> - <server>: Demo Account - Read Only - …" (or "Real Account");

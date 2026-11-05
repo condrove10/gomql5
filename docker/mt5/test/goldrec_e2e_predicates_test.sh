@@ -7,7 +7,7 @@
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 script="$here/../../../scripts/goldrec-e2e.sh"
-defs=$(grep -E '^(count|lines|have_ticks|connects|have_live_ticks|trade_connected|failed_auth_count|last_failed_server)\(\)' "$script")
+defs=$(grep -E '^(count|lines|have_ticks|connects|have_live_ticks|trade_connected)\(\)' "$script")
 [ -n "$defs" ] || { echo "FAIL: predicates not found"; exit 1; }
 DATA=$(mktemp -d)
 trap 'rm -rf "$DATA"' EXIT
@@ -38,22 +38,4 @@ echo '{"bid":2,"trade_server_connected":true}' >>"$DATA/prices.jsonl"
 check "one live tick" true have_live_ticks 1
 check "two ticks in total" true have_ticks 2
 
-# Journal parsing, on the Network/Broker lines of a real wizard-login run
-# (user's FTMO run 2026-11-04, login replaced): the config login fell back to
-# MetaQuotes-Demo, then list entries 0..4 hit Server4, Server5, Server,
-# Server3, Server2 ("Broker … no demo/preliminary groups" lines must not count).
-journal="$here/testdata/journal-ftmo-wizard.txt"
-same() { # name, expected, actual
-  if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: want '$2', got '$3'"; fail=1; fi
-}
-same "failed logins counted (fallback + 5 wizard tries)" 6 "$(failed_auth_count <"$journal")"
-same "last failed server" "FTMO-Server2" "$(last_failed_server <"$journal")"
-same "server of the first wizard try" "FTMO-Server4" "$(grep -m2 'authorization on' "$journal" | tail -1 | last_failed_server)"
-same "no failures in an empty journal" 0 "$(failed_auth_count </dev/null)"
-same "no server from an empty journal" "" "$(last_failed_server </dev/null)"
-# The script runs under `set -euo pipefail`: a no-match must not abort it
-# (it did: srv=$(journal | last_failed_server) exited silently when the
-# journal had no failed login yet).
-same "parsers survive set -euo pipefail on no match" "reached" \
-  "$(bash -c 'set -euo pipefail; eval "$1"; a=$(printf "x\n" | last_failed_server); b=$(printf "x\n" | failed_auth_count); echo reached' _ "$defs" 2>&1)"
 exit $fail

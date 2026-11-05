@@ -403,30 +403,35 @@ make help
    MT5_LOGIN=12345678
    MT5_PASSWORD=<investor password>
    MT5_SERVER=Broker-Demo
+   MT5_SERVERS_DAT=/path/to/servers.dat   # needed when MT5_SERVER is a name
    MYFXBOOK_EMAIL=…        # optional: enables the API probe
    MYFXBOOK_PASSWORD=…
    ```
+
+   The login is config-only: the terminal reads `MT5_LOGIN`, `MT5_PASSWORD`
+   and `MT5_SERVER` from its start-up config, and nothing clicks through the
+   UI. `MT5_SERVER` has to be one of:
+
+   * **a server name listed in the terminal's `config/servers.dat`.** The
+     stock terminal lists only MetaQuotes servers, so a broker name such as
+     `FTMO-Demo` falls back to MetaQuotes-Demo ("Invalid account"). Copy
+     `servers.dat` from a desktop MT5 that has logged in to the broker once
+     (*File → Open Data Folder*, then `config/servers.dat`) and point
+     `MT5_SERVERS_DAT` at it.
+   * **`address:port`** of the trade server. No `servers.dat` is needed.
+
+   The session keeps the terminal's own copy of `servers.dat` in
+   `mt5-state/` (git-ignored). After one successful login, later sessions log
+   in from the config alone, even without `MT5_SERVERS_DAT`. If the journal
+   shows the fallback to MetaQuotes-Demo, or `authorization on <MT5_SERVER>
+   failed`, the live check stops at once and says which of these to fix.
 
 2. Run it. The build takes about 7 GB of disk and network access to
    MetaQuotes.
 
    ```bash
-   make session FIND_BROKER=FTMO
+   make session
    ```
-
-   For a broker whose server the stock terminal doesn't know (FTMO, for
-   example), the configured login falls back to MetaQuotes-Demo. With
-   `FIND_BROKER`, the run then logs in through *File → Open an Account*:
-   1. It searches the broker, clicks Next, and fills in the
-      existing-account form.
-   2. It selects `MT5_SERVER` in the server list **by name**. The helper
-      `docker/mt5/tools/wincombo.c` does this with standard Win32 combo-box
-      messages, the interface accessibility tools use. It reads no process
-      memory.
-   3. If the helper can't run, it falls back to trying list entries in
-      order.
-
-   It never opens an account.
 
    The live check uses `BTCUSD` by default (`BROKER_SYMBOL`). Crypto trades
    24/7, so the check can't land on a closed market. Pass
@@ -488,7 +493,7 @@ scripts/mt5ctl.sh goto experts-log
 ```
 
 ```bash
-scripts/mt5ctl.sh find-broker FTMO
+scripts/mt5ctl.sh goto journal
 ```
 
 ## Without Docker

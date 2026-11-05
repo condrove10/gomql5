@@ -26,9 +26,11 @@
 # directory, and session-out/<timestamp>.tar.gz. Steps keep going after a
 # failure; the summary at the end lists PASS/FAIL/SKIP per step.
 #
-# Settings: MT5_SERVERS_DAT (host path to a servers.dat that knows the broker), FUZZTIME, BROKER_SYMBOL (BTCUSD: trades 24/7, so the live check never
-# hits a closed market; XAUUSD for gold hours), FIND_BROKER (broker directory
-# search term, e.g. FTMO), POSITIONING_SOURCE (replay | api), E2E_TIMEOUT (600),
+# Settings: MT5_SERVERS_DAT (host path to a servers.dat that knows the broker:
+# a desktop MT5's File > Open Data Folder > config/servers.dat; not needed when
+# MT5_SERVER is address:port), FUZZTIME, BROKER_SYMBOL (BTCUSD: trades 24/7, so
+# the live check never hits a closed market; XAUUSD for gold hours),
+# POSITIONING_SOURCE (replay | api), E2E_TIMEOUT (600),
 # plus e2e.sh's E2E_CA_CERT, HTTPS_PROXY, BASE_IMAGE, GO_IMAGE.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -43,7 +45,6 @@ if [ -f "$E2E_ENV" ]; then
 fi
 FUZZTIME="${FUZZTIME:-20s}"
 BROKER_SYMBOL="${BROKER_SYMBOL:-BTCUSD}"
-FIND_BROKER="${FIND_BROKER:-}"
 POSITIONING_SOURCE="${POSITIONING_SOURCE:-replay}"
 E2E_TIMEOUT="${E2E_TIMEOUT:-600}"
 
@@ -105,7 +106,7 @@ s_env() {
   echo "go work dir (GOTMPDIR): ${GOTMPDIR:-Go default}"
   echo "disk: $(df -h . | tail -1)"
   echo "env file: $E2E_ENV $([ -f "$E2E_ENV" ] && echo present || echo absent)"
-  for v in MT5_LOGIN MT5_SERVER BROKER_SYMBOL FIND_BROKER POSITIONING_SOURCE FUZZTIME HTTPS_PROXY BASE_IMAGE GO_IMAGE E2E_CA_CERT; do
+  for v in MT5_LOGIN MT5_SERVER MT5_SERVERS_DAT BROKER_SYMBOL POSITIONING_SOURCE FUZZTIME HTTPS_PROXY BASE_IMAGE GO_IMAGE E2E_CA_CERT; do
     echo "  $v=${!v:-<unset>}"
   done
   for v in MT5_PASSWORD MYFXBOOK_EMAIL MYFXBOOK_PASSWORD; do
@@ -139,8 +140,9 @@ s_probe_net() {
     head -c 200 "$OUT/probe-body.txt" | tr -d '\r' | sed 's/^/   body: /'; echo
   done
   if have MT5_SERVER; then
-    echo "-- MT5 server '$MT5_SERVER': the terminal resolves it through MetaQuotes' broker directory, not DNS."
-    echo "   Watch the e2e-live step's 'journal: ... Network' lines and find-broker screenshot for the outcome."
+    echo "-- MT5 server '$MT5_SERVER': an address:port is used as is; a name must be listed in the"
+    echo "   terminal's config/servers.dat (MT5_SERVERS_DAT, or mt5-state/servers.dat from an earlier run)."
+    echo "   Watch the e2e-live step's 'journal: ... Network' lines for the outcome."
   fi
   rm -f "$OUT/probe-body.txt"
   return 0
@@ -169,7 +171,6 @@ s_e2e_live() {
     --source "$POSITIONING_SOURCE" --out "$OUT/e2e-live" --state "$ROOT/mt5-state")
   [ -n "${MT5_SERVERS_DAT:-}" ] && args+=(--servers-dat "$MT5_SERVERS_DAT")
   echo "-- servers.dat: ${MT5_SERVERS_DAT:-not given}; state dir mt5-state/ $( [ -s "$ROOT/mt5-state/servers.dat" ] && echo "has a saved servers.dat" || echo "is empty")"
-  [ -n "$FIND_BROKER" ] && args+=(--find-broker "$FIND_BROKER")
   scripts/goldrec-e2e.sh "${args[@]}"
   local rc=$?
   echo "-- live price sample:"; grep '"trade_server_connected":true' "$OUT/e2e-live/data/prices.jsonl" 2>/dev/null | head -3

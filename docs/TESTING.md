@@ -57,8 +57,12 @@ bundle.
 
 * `make e2e-live` needs `MT5_*` and fails unless live ticks arrive
   (`trade_server_connected:true`).
-* `FIND_BROKER=NAME` adds a broker-directory search when the login doesn't
-  connect.
+* The login is config-only. `MT5_SERVER` must be `address:port` or a name
+  listed in `config/servers.dat`: set `MT5_SERVERS_DAT` to a desktop MT5's
+  copy (*File → Open Data Folder* → `config/servers.dat`). `mt5-state/`
+  keeps the terminal's copy between sessions. The live check stops at once
+  when the journal shows a fallback to MetaQuotes-Demo or `authorization on
+  <MT5_SERVER> failed`.
 
 **Cloud sandbox limit (2026-11-04).** With an FTMO demo account
 (`MT5_SERVER=FTMO-Demo`), the terminal never connected. The journal showed
@@ -133,6 +137,7 @@ commands below run from the host against the only container labelled
 | `expert GoBridge … removed` then `loaded` | journal | normal after Options › OK (settings change reloads EAs) |
 | "Updates have been downloaded … Restart / Later" | screen | LiveUpdate modal: swallows keys, blocks Alt+F4; `dismiss` |
 | "Select a company to open an account" | screen | account wizard (no login configured); harmless, `dismiss` |
+| `authorization on MetaQuotes-Demo failed (Invalid account)` with another `MT5_SERVER` | journal | the server name is not in `config/servers.dat`: provide `MT5_SERVERS_DAT` or use `address:port` |
 
 **Rules for driving the UI:**
 
@@ -168,12 +173,13 @@ Cases where this loop found the real cause:
 | retries reported "no connection" forever | `ls /proc/net/tcp6` → missing; awk rc=2 | read only existing tables |
 | `wineboot` hung 300 s at build | wineboot without Xvfb worked | Mono/Gecko prompt → `WINEDLLOVERRIDES="mscoree,mshtml="` |
 | live FTMO login (user's host, build 6300): `allow-host: terminal window not found`, EA never connects | renamed the window here to `1515192722: FTMO-Demo - Demo Account - …` → same message | logged-in title drops "MetaTrader 5" → find the window by class `terminal64` (`ui_main_window`); `windows.txt` in the e2e evidence |
-| `MT5_SERVER=FTMO-Demo`: journal `authorization on MetaQuotes-Demo failed (Invalid account)` | user's screenshots: the directory search finds "FTMO Global Markets Ltd" | stock terminal doesn't know the server and falls back to MetaQuotes-Demo → `ui_login_existing` (File › Open an Account › company › Next › existing account › server-list entry N › Finish); `goldrec-e2e.sh --require-live --find-broker FTMO` tries entries until the bridge reports a trade-server connection |
-| wizard login tried 5 servers, all "Invalid account" (user's run, build 6300) | `login-*-servers.png`: FTMO's list is Server4, Server5, Server, Server3, Server2, **Demo** (not alphabetical); the account's FTMO-Demo was entry 5 | 5 tries ended one short → up to 12 tries, each ends as soon as the journal logs `authorization on <server> failed`; stops with a reason when MT5_SERVER itself rejects the login or the list repeats; a restart starts at the entry that worked (`goldrec_e2e_login_loop_test.sh` simulates this list) |
+| `MT5_SERVER=FTMO-Demo`: journal `authorization on MetaQuotes-Demo failed (Invalid account)` | user's screenshots: the directory search finds "FTMO Global Markets Ltd" | stock terminal doesn't know the server and falls back to MetaQuotes-Demo → `ui_login_existing` (File › Open an Account › company › Next › existing account › server-list entry N › Finish); `goldrec-e2e.sh --require-live --find-broker FTMO` tries entries until the bridge reports a trade-server connection. **Removed (see the servers.dat row below)** |
+| wizard login tried 5 servers, all "Invalid account" (user's run, build 6300) | `login-*-servers.png`: FTMO's list is Server4, Server5, Server, Server3, Server2, **Demo** (not alphabetical); the account's FTMO-Demo was entry 5 | 5 tries ended one short → up to 12 tries, each ends as soon as the journal logs `authorization on <server> failed`; stops with a reason when MT5_SERVER itself rejects the login or the list repeats; a restart starts at the entry that worked (`goldrec_e2e_login_loop_test.sh` simulated this list). **Removed with the wizard** |
 | logged in to FTMO-Demo (`authorized`, `synchronized … 166 symbols`, live EURUSD on screen) but 0 XAUUSD ticks in 10 min | timeline: goldrec subscribed 23:43:39, account synchronized 23:43:44; the EA's PollTicks skips a failing `SymbolInfoTick` silently | the sync can drop a symbol selected before it → goldrec re-selects + re-subscribes when the trade server connects and after 60 s of silence, and records a `symbol_resync` event (selected?, quote and its time, errors). Live ticks on FTMO not yet confirmed |
-| positional server picks are slow (~2 min/entry) and FTMO's order changed between runs | `wincombo list` under Wine against the wizard: the server list is a standard Win32 `ComboBox` (entries readable; the A APIs returned only "M", the W APIs the full text); `select` on a 3-entry Options combo moved it to entry 2 on screen | pick `MT5_SERVER` by name with window messages (`ui_login_existing … name`, `docker/mt5/tools/wincombo.c`, built by mingw in the image); a missing server fails at once with the list; positions remain the fallback |
+| positional server picks are slow (~2 min/entry) and FTMO's order changed between runs | `wincombo list` under Wine against the wizard: the server list is a standard Win32 `ComboBox` (entries readable; the A APIs returned only "M", the W APIs the full text); `select` on a 3-entry Options combo moved it to entry 2 on screen | pick `MT5_SERVER` by name with window messages (`ui_login_existing … name`, `docker/mt5/tools/wincombo.c`, built by mingw in the image); a missing server fails at once with the list; positions remain the fallback. **Removed with the wizard** (helper, `wintools` image stage) |
 | `goto experts-log` showed the "Company" tab when logged in | user's logged-in screenshot: Trade/Exposure/History/…/Company tabs added | Toolbox layout depends on the login → `ui_account_authorized` (title has " Account - ") picks the tab position |
-| page 2 of that wizard ignored typed login/password 6 s after Next | same steps on a page left open for a minute worked | the page settles slowly → wait 20 s, fill twice (Ctrl+A makes it idempotent) |
+| page 2 of that wizard ignored typed login/password 6 s after Next | same steps on a page left open for a minute worked | the page settles slowly → wait 20 s, fill twice (Ctrl+A makes it idempotent). **Removed with the wizard** |
+| why does a config login to `FTMO-Demo` fall back at all? | MetaQuotes documents `[Common] Server` as "address and port … separated with a colon"; a name resolves only through `config/servers.dat`, which the stock install fills with MetaQuotes servers | the wizard was a workaround for a missing file → **wizard removed** (cursor-driven, slow, coordinates unverified for found companies, positions shifted between runs). Login is config-only: install a `servers.dat` that knows the broker (`MT5_SERVERS_DAT`, from a desktop MT5's data folder) or use `address:port`; the terminal's copy is kept in `GOMQL5_STATE_DIR` (`mt5-state/` in sessions). `goldrec-e2e.sh` fails fast with that advice when the journal shows the fallback or `authorization on <MT5_SERVER> failed` (`goldrec_e2e_login_test.sh`, `servers_dat_test.sh`) |
 | walkthrough screenshot showed the wrong tab | ran allow-host and `goto` concurrently | UI race → `flock` |
 
 ## 6. Sandbox / CI environment notes
