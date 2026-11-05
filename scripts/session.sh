@@ -101,11 +101,11 @@ have() { [ -n "${!1:-}" ]; }
 # DIR/servers.dat.verified (written on PASS, C11) holds a sha256= that matches
 # the file, so a file a failed run left behind is never called verified.
 servers_state_status() {
-  local f="$1/servers.dat" m="$1/servers.dat.verified" want got
+  local f="$1/servers.dat" m="$1/servers.dat.verified" got
+  local exp=${MT5_EXPECT_SERVER:-${MT5_SERVER:-}}
   if [ ! -s "$f" ]; then echo "is empty"; return; fi
-  want=$(sed -n 's/^sha256=//p' "$m" 2>/dev/null)
   got=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
-  if [ -n "$want" ] && [ "$want" = "$got" ]; then echo "has a saved servers.dat, verified"
+  if [ "$(cat "$m" 2>/dev/null)" = "server=$exp"$'\n'"sha256=$got" ]; then echo "has a saved servers.dat, verified"
   else echo "has a saved servers.dat, unverified"; fi
 }
 

@@ -30,7 +30,7 @@ same "file without marker: unverified" "has a saved servers.dat, unverified" "$(
 mkdir -p "$T/ok"; printf 'learned list' >"$T/ok/servers.dat"
 h=$(sha256sum "$T/ok/servers.dat" | cut -d' ' -f1)
 printf 'server=FTMO-Demo\nsha256=%s\n' "$h" >"$T/ok/servers.dat.verified"
-same "matching hash: verified" "has a saved servers.dat, verified" "$(servers_state_status "$T/ok")"
+same "matching hash: verified" "has a saved servers.dat, verified" "$(MT5_SERVER=FTMO-Demo servers_state_status "$T/ok")"
 
 # the file changed after promotion: the hash no longer matches
 printf 'overwritten by a failed run' >"$T/ok/servers.dat"
@@ -40,5 +40,12 @@ same "hash mismatch: unverified" "has a saved servers.dat, unverified" "$(server
 mkdir -p "$T/nohash"; printf 'learned list' >"$T/nohash/servers.dat"
 printf 'server=FTMO-Demo\n' >"$T/nohash/servers.dat.verified"
 same "marker without sha256: unverified" "has a saved servers.dat, unverified" "$(servers_state_status "$T/nohash")"
+
+# a matching hash is not enough: the marker must name the expected server
+# (MT5_EXPECT_SERVER, else MT5_SERVER). A marker for another broker is unverified.
+mkdir -p "$T/wrongsrv"; printf 'learned list' >"$T/wrongsrv/servers.dat"
+h=$(sha256sum "$T/wrongsrv/servers.dat" | cut -d' ' -f1)
+printf 'server=OtherBroker-Demo\nsha256=%s\n' "$h" >"$T/wrongsrv/servers.dat.verified"
+same "wrong server in marker: unverified" "has a saved servers.dat, unverified" "$(MT5_SERVER=FTMO-Demo servers_state_status "$T/wrongsrv")"
 
 exit $fail
