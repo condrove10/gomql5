@@ -59,7 +59,7 @@ type Config struct {
 	StatusEvery time.Duration // default 5s
 
 	// HealthEvery is how often a connected terminal is checked
-	// (TerminalInfo, tick silence). Default 5s.
+	// (TerminalInfo, AccountInfo, Ping, tick silence). Default 5s.
 	HealthEvery time.Duration
 	// ResyncQuiet: while the terminal is connected to a trade server and no
 	// tick has arrived for this long, re-select and re-subscribe the symbol
@@ -77,6 +77,20 @@ type Recorder struct {
 	prev     *myfxbook.Values
 	st       Status
 	lastTick time.Time
+	term     termState
+}
+
+// termState is what is known about the current EA connection: the hello's
+// account until a health poll answers, then the latest poll's. The hello is
+// sent at connect, often before the login finishes, so it can say login=0 or
+// name a server the terminal then leaves.
+type termState struct {
+	conn       uint64 // per-run connection counter, from 1
+	login      int64
+	server     string
+	company    string
+	connected  bool  // TerminalInfo.Connected
+	serverTime int64 // Ping: the trade server's clock, seconds
 }
 
 // Status is the health snapshot in status.json.
@@ -190,6 +204,25 @@ func (r *Recorder) event(kind string, kv ...any) {
 	if err := r.cfg.Store.AppendSync("events", rec); err != nil {
 		r.cfg.Log.Error("events write failed", "err", err)
 	}
+}
+
+// connEvent is event for anything that belongs to the current EA connection.
+// priceLoop serves one connection at a time, so the current one is unambiguous.
+func (r *Recorder) connEvent(kind string, kv ...any) {
+	r.event(kind, append(kv, "conn", r.termNow().conn)...)
+}
+
+func (r *Recorder) termNow() termState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.term
+}
+
+func (r *Recorder) updateTerm(f func(*termState)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f(&r.term)
+	r.st.TerminalLogin, r.st.TerminalServer, r.st.TradeServerConnected = r.term.login, r.term.server, r.term.connected
 }
 
 func (r *Recorder) setErr(err error) {
@@ -433,6 +466,7 @@ type PriceRecord struct {
 	Schema       string `json:"schema"`
 	ID           string `json:"id"`
 	RunID        string `json:"run_id"`
+	Conn         uint64 `json:"conn"` // per-run EA connection counter, from 1
 	Seq          uint64 `json:"seq"`
 	Feed         string `json:"feed"` // "mt5"
 	Company      string `json:"broker_company"`
@@ -440,8 +474,8 @@ type PriceRecord struct {
 	Login        int64  `json:"login"`
 	BrokerSymbol string `json:"broker_symbol"`
 	Instrument   string `json:"instrument"`
-	// TradeServerConnected is TerminalInfo.Connected when this tick arrived
-	// (refreshed every 10s). false means the value is a cached quote.
+	// TradeServerConnected is TerminalInfo.Connected in the latest health
+	// poll. false means the value is a cached quote.
 	TradeServerConnected bool    `json:"trade_server_connected"`
 	Bid                  float64 `json:"bid"`
 	Ask                  float64 `json:"ask"`
@@ -455,6 +489,9 @@ type PriceRecord struct {
 	ProviderTimeText  string    `json:"provider_time_broker_wallclock"`
 	ProviderTimeBasis string    `json:"provider_time_basis"`
 	ReceivedAt        time.Time `json:"received_at"`
+	// ServerTime is Ping in the latest health poll: seconds on the same clock
+	// as ProviderTimeMsc, 0 if no poll has answered.
+	ServerTime int64 `json:"server_time"`
 }
 
 func (r *Recorder) priceLoop(ctx context.Context) error {
@@ -478,19 +515,39 @@ func (r *Recorder) priceLoop(ctx context.Context) error {
 // store write fails (error).
 func (r *Recorder) serveTerminal(ctx context.Context, term *mt5.Terminal) error {
 	h := term.Hello()
-	r.event("terminal_connected", "login", h.Login, "server", h.Server, "company", h.Company, "build", h.Build,
+	r.updateTerm(func(t *termState) {
+		*t = termState{conn: t.conn + 1, login: h.Login, server: h.Server, company: h.Company}
+	})
+	r.connEvent("terminal_connected", "login", h.Login, "server", h.Server, "company", h.Company, "build", h.Build,
 		"ea_version", h.EAVersion, "remote", term.RemoteAddr().String())
 	r.cfg.Log.Info("terminal connected", "login", h.Login, "server", h.Server, "build", h.Build)
 	r.mu.Lock()
-	r.st.TerminalConnected, r.st.TerminalLogin, r.st.TerminalServer = true, h.Login, h.Server
+	r.st.TerminalConnected = true
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
 		r.st.TerminalConnected = false
 		r.st.DroppedTicks += term.DroppedTicks()
 		r.mu.Unlock()
-		r.event("terminal_disconnected", "login", h.Login, "error", fmt.Sprint(term.Err()), "dropped_ticks", term.DroppedTicks())
+		r.connEvent("terminal_disconnected", "login", r.termNow().login, "error", fmt.Sprint(term.Err()), "dropped_ticks", term.DroppedTicks())
 		r.cfg.Log.Warn("terminal disconnected", "err", term.Err())
+	}()
+
+	// First poll before the symbol, so nothing below is written with the
+	// hello's account; then it keeps running whatever happens to the symbol.
+	var seen pollSeen
+	r.pollHealth(ctx, term, &seen)
+	tradeConn := r.termNow().connected
+	hctx, hstop := context.WithCancel(ctx)
+	var hwg sync.WaitGroup
+	hwg.Add(1)
+	go func() {
+		defer hwg.Done()
+		r.healthLoop(hctx, term, &seen)
+	}()
+	defer func() { // runs before terminal_disconnected is written
+		hstop()
+		hwg.Wait()
 	}()
 
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -498,7 +555,7 @@ func (r *Recorder) serveTerminal(ctx context.Context, term *mt5.Terminal) error 
 	sym := r.cfg.BrokerSymbol
 	if err := term.SymbolSelect(cctx, sym, true); err != nil {
 		cands, _ := term.SymbolsGet(cctx, candidatesPattern(sym), false)
-		r.event("quality", "what", "broker_symbol_unavailable", "broker_symbol", sym, "error", err.Error(), "candidates", cands)
+		r.connEvent("quality", "what", "broker_symbol_unavailable", "broker_symbol", sym, "error", err.Error(), "candidates", cands)
 		r.cfg.Log.Error("broker symbol unavailable; set -broker-symbol", "symbol", sym, "err", err, "candidates", cands)
 		r.setErr(fmt.Errorf("broker symbol %q: %v", sym, err))
 		// Stay connected so the operator can see it in status; nothing to record.
@@ -509,23 +566,11 @@ func (r *Recorder) serveTerminal(ctx context.Context, term *mt5.Terminal) error 
 		return nil
 	}
 	if si, err := term.SymbolInfo(cctx, sym); err == nil {
-		r.event("instrument", "broker_symbol", si.Name, "description", si.Description, "digits", si.Digits,
+		ts := r.termNow()
+		r.connEvent("instrument", "broker_symbol", si.Name, "description", si.Description, "digits", si.Digits,
 			"currency_base", si.CurrencyBase, "currency_profit", si.CurrencyProfit, "contract_size", si.TradeContractSize,
-			"path", si.Path, "login", h.Login, "server", h.Server)
+			"path", si.Path, "login", ts.login, "server", ts.server)
 	}
-	// Without a trade-server connection (no account) the terminal only holds
-	// cached quotes: the first "tick" is the last cached quote, not a live one.
-	tradeConn := false
-	if ti, err := term.TerminalInfo(cctx); err == nil {
-		tradeConn = ti.Connected
-		r.event("terminal_info", "trade_server_connected", ti.Connected, "build", ti.Build, "login", h.Login)
-		if !ti.Connected {
-			r.cfg.Log.Warn("terminal has no trade-server connection: no live prices; any tick is a cached quote (price records carry trade_server_connected=false)")
-		}
-	}
-	r.mu.Lock()
-	r.st.TradeServerConnected = tradeConn
-	r.mu.Unlock()
 	if err := term.SubscribeTicks(cctx, sym); err != nil {
 		r.setErr(err)
 		r.cfg.Log.Error("subscribe failed", "err", err)
@@ -543,12 +588,8 @@ func (r *Recorder) serveTerminal(ctx context.Context, term *mt5.Terminal) error 
 			return nil
 		case <-summary.C:
 			ictx, icancel := context.WithTimeout(ctx, 10*time.Second)
-			if ti, err := term.TerminalInfo(ictx); err == nil && ti.Connected != tradeConn {
-				tradeConn = ti.Connected
-				r.event("terminal_info", "trade_server_connected", ti.Connected, "build", ti.Build, "login", h.Login)
-				r.mu.Lock()
-				r.st.TradeServerConnected = tradeConn
-				r.mu.Unlock()
+			if up := r.termNow().connected; up != tradeConn {
+				tradeConn = up
 				if tradeConn {
 					// The account sync after a login can rebuild Market Watch
 					// and drop a symbol selected before it; the EA then polls
@@ -576,9 +617,10 @@ func (r *Recorder) serveTerminal(ctx context.Context, term *mt5.Terminal) error 
 			}
 			now := time.Now().UTC()
 			id, seq := r.next("prices")
-			rec := PriceRecord{Schema: Schema, ID: id, RunID: r.runID, Seq: seq, Feed: "mt5", Company: h.Company, Server: h.Server,
-				Login: h.Login, BrokerSymbol: sym, Instrument: r.cfg.PriceInstrument, Bid: tk.Bid, Ask: tk.Ask, Last: tk.Last,
-				TradeServerConnected: tradeConn, Volume: tk.Volume, VolumeReal: tk.VolumeReal, Flags: int(tk.Flags), ProviderTimeMsc: tk.TimeMsc,
+			ts := r.termNow()
+			rec := PriceRecord{Schema: Schema, ID: id, RunID: r.runID, Conn: ts.conn, Seq: seq, Feed: "mt5", Company: ts.company, Server: ts.server,
+				Login: ts.login, BrokerSymbol: sym, Instrument: r.cfg.PriceInstrument, Bid: tk.Bid, Ask: tk.Ask, Last: tk.Last,
+				TradeServerConnected: ts.connected, ServerTime: ts.serverTime, Volume: tk.Volume, VolumeReal: tk.VolumeReal, Flags: int(tk.Flags), ProviderTimeMsc: tk.TimeMsc,
 				ProviderTimeText:  mt5.ServerTimeMsc(tk.TimeMsc).Format("2006-01-02T15:04:05.000"),
 				ProviderTimeBasis: "broker trade-server wall clock (offset to UTC unknown)", ReceivedAt: now}
 			if err := r.cfg.Store.Append("prices", rec); err != nil {
@@ -598,12 +640,102 @@ func (r *Recorder) serveTerminal(ctx context.Context, term *mt5.Terminal) error 
 	}
 }
 
+// healthCallTimeout bounds each call of a health poll on its own.
+const healthCallTimeout = 10 * time.Second
+
+// pollSeen is what one connection's health poll last wrote, so its events
+// appear on change. It belongs to the connection: a new connection is a new
+// login, and the checks read one connection alone, so it writes them again.
+type pollSeen struct {
+	account   *accountSeen
+	connected *bool
+}
+
+// accountSeen holds only what the account event may carry. AccountInfo also
+// holds the holder's name and balance, and events.jsonl goes into the bundle.
+type accountSeen struct {
+	login        int64
+	server       string
+	company      string
+	tradeAllowed bool
+}
+
+// healthLoop polls until ctx ends or the terminal disconnects.
+func (r *Recorder) healthLoop(ctx context.Context, term *mt5.Terminal, seen *pollSeen) {
+	t := time.NewTicker(r.cfg.HealthEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-term.Done():
+			return
+		case <-t.C:
+			r.pollHealth(ctx, term, seen)
+		}
+	}
+}
+
+// pollHealth asks the terminal which account it is on, whether it reaches the
+// trade server and what time the server says. A call that fails leaves the
+// previous value and writes nothing, so a silent account_info cannot look like
+// an account. An event is written before the state it announces, so no record
+// names an account ahead of its event.
+func (r *Recorder) pollHealth(ctx context.Context, term *mt5.Terminal, seen *pollSeen) {
+	warn := func(call string, err error) {
+		if ctx.Err() == nil {
+			r.cfg.Log.Warn("health poll failed", "call", call, "err", err)
+		}
+	}
+	actx, acancel := context.WithTimeout(ctx, healthCallTimeout)
+	a, err := term.AccountInfo(actx)
+	acancel()
+	if err != nil {
+		warn("account_info", err)
+	} else {
+		now := accountSeen{login: a.Login, server: a.Server, company: a.Company, tradeAllowed: a.TradeAllowed}
+		if seen.account == nil || *seen.account != now {
+			r.connEvent("account", "login", now.login, "server", now.server, "company", now.company, "trade_allowed", now.tradeAllowed)
+			seen.account = &now
+		}
+		r.updateTerm(func(t *termState) { t.login, t.server, t.company = now.login, now.server, now.company })
+	}
+
+	tctx, tcancel := context.WithTimeout(ctx, healthCallTimeout)
+	ti, err := term.TerminalInfo(tctx)
+	tcancel()
+	if err != nil {
+		warn("terminal_info", err)
+	} else {
+		if seen.connected == nil || *seen.connected != ti.Connected {
+			r.connEvent("terminal_info", "trade_server_connected", ti.Connected, "build", ti.Build, "login", r.termNow().login)
+			// Without a trade-server connection (no account) the terminal only
+			// holds cached quotes: the first "tick" is the last cached quote.
+			if seen.connected == nil && !ti.Connected {
+				r.cfg.Log.Warn("terminal has no trade-server connection: no live prices; any tick is a cached quote (price records carry trade_server_connected=false)")
+			}
+			seen.connected = &ti.Connected
+		}
+		r.updateTerm(func(t *termState) { t.connected = ti.Connected })
+	}
+
+	pctx, pcancel := context.WithTimeout(ctx, healthCallTimeout)
+	sec, err := term.Ping(pctx)
+	pcancel()
+	if err != nil {
+		warn("ping", err)
+	} else {
+		r.updateTerm(func(t *termState) { t.serverTime = sec })
+	}
+}
+
 // resync re-selects and re-subscribes the broker symbol and records what the
 // terminal says about it, so a silent tick stream can be told apart:
 // select error / not selected (symbol missing or renamed), a quote with an
 // old time (market closed), or a fresh quote (ticks should now flow).
 func (r *Recorder) resync(ctx context.Context, term *mt5.Terminal, sym, reason string) {
-	kv := []any{"reason", reason, "broker_symbol", sym, "login", term.Hello().Login}
+	ts := r.termNow()
+	kv := []any{"reason", reason, "broker_symbol", sym, "login", ts.login, "conn", ts.conn}
 	if err := term.SymbolSelect(ctx, sym, true); err != nil {
 		kv = append(kv, "select_error", err.Error())
 		cands, _ := term.SymbolsGet(ctx, candidatesPattern(sym), false)
