@@ -26,7 +26,8 @@
 # directory, and session-out/<timestamp>.tar.gz. Steps keep going after a
 # failure; the summary at the end lists PASS/FAIL/SKIP per step.
 #
-# Settings: FUZZTIME, BROKER_SYMBOL (XAUUSD), FIND_BROKER (broker directory
+# Settings: FUZZTIME, BROKER_SYMBOL (BTCUSD: trades 24/7, so the live check never
+# hits a closed market; XAUUSD for gold hours), FIND_BROKER (broker directory
 # search term, e.g. FTMO), POSITIONING_SOURCE (replay | api), E2E_TIMEOUT (600),
 # plus e2e.sh's E2E_CA_CERT, HTTPS_PROXY, BASE_IMAGE, GO_IMAGE.
 set -uo pipefail
@@ -41,7 +42,7 @@ if [ -f "$E2E_ENV" ]; then
   set +a
 fi
 FUZZTIME="${FUZZTIME:-20s}"
-BROKER_SYMBOL="${BROKER_SYMBOL:-XAUUSD}"
+BROKER_SYMBOL="${BROKER_SYMBOL:-BTCUSD}"
 FIND_BROKER="${FIND_BROKER:-}"
 POSITIONING_SOURCE="${POSITIONING_SOURCE:-replay}"
 E2E_TIMEOUT="${E2E_TIMEOUT:-600}"

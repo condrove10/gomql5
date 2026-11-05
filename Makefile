@@ -15,7 +15,7 @@ SESSION := scripts/session.sh
 
 # Tunables (also read by session.sh from the environment)
 FUZZTIME ?= 20s
-BROKER_SYMBOL ?= XAUUSD
+BROKER_SYMBOL ?= BTCUSD
 FIND_BROKER ?=
 POSITIONING_SOURCE ?= replay
 E2E_TIMEOUT ?= 600

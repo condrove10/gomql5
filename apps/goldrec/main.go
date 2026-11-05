@@ -40,9 +40,10 @@ func main() {
 	entitlement := flag.String("entitlement", "unknown", "declared entitlement written on records (unknown|free|paid)")
 	providerSym := flag.String("provider-symbol", "XAUUSD", "symbol name in the Myfxbook response")
 	listen := flag.String("listen", ":7788", "address the GoBridge EA connects to (empty: no prices)")
-	brokerSym := flag.String("broker-symbol", "XAUUSD", "broker symbol for gold (e.g. GOLD, XAUUSD.r)")
+	brokerSym := flag.String("broker-symbol", "XAUUSD", "broker symbol to record (gold: XAUUSD, GOLD, XAUUSD.r; any symbol works, e.g. BTCUSD)")
 	once := flag.Bool("once", false, "one positioning round, then exit (probe)")
 	duration := flag.Duration("duration", 0, "stop after this long (0 = until SIGINT/SIGTERM)")
+	resyncQuiet := flag.Duration("resync-quiet", 10*time.Second, "re-select and re-subscribe the broker symbol after this long without ticks while connected")
 	apiBase := flag.String("api-base", myfxbook.DefaultBaseURL, "vendor API root")
 	flag.Parse()
 
@@ -64,7 +65,7 @@ func main() {
 	defer st.Close()
 
 	cfg := record.Config{Store: st, Log: log, Interval: *interval, Entitlement: *entitlement,
-		ProviderSymbol: *providerSym, BrokerSymbol: *brokerSym, SourceMode: *source}
+		ProviderSymbol: *providerSym, BrokerSymbol: *brokerSym, SourceMode: *source, ResyncQuiet: *resyncQuiet}
 
 	switch *source {
 	case "api":

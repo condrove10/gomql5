@@ -129,7 +129,9 @@ ui_find_company() {
 # COMPANY is searched in the broker directory (empty: use the first listed
 # company, i.e. MetaQuotes); INDEX picks the INDEX-th entry (0 = first) of the
 # company's server list, which is a pick-list that ignores typed names (Wine's
-# type-ahead matches one letter only). Login and password come from
+# type-ahead matches one letter only). INDEX "name" selects $MT5_SERVER by name
+# through window messages instead (ui_wincombo) and returns 3 if it is not
+# listed; /tmp/mt5ctl-servers.txt then holds the list as text. Login and password come from
 # $MT5_LOGIN / $MT5_PASSWORD (the container env); nothing is echoed.
 # Writes /tmp/mt5ctl-servers.png (the open server list) and
 # /tmp/mt5ctl-login.png (the filled form; the password field is masked).
@@ -166,13 +168,35 @@ ui_login_existing() {
     xdotool mousemove ${UI_ACCOUNT_PASSWORD} click 1 sleep 0.3 key ctrl+a type --delay 60 "$MT5_PASSWORD"
     sleep 1.5
   done
-  ui_click $UI_ACCOUNT_SERVER; sleep 1.5          # opens the list
-  xdotool key Home; sleep 0.3
-  for ((i = 0; i < index; i++)); do xdotool key Down; sleep 0.2; done
-  ui_shot /tmp/mt5ctl-servers.png "$UI_CROP_ACCOUNT"
-  xdotool key Return; sleep 1                      # closes the list on the highlighted entry
+  if [ "$index" = name ]; then
+    # Select $MT5_SERVER by name through window messages (CB_FINDSTRINGEXACT /
+    # CB_SETCURSEL + CBN_SELCHANGE, see docker/mt5/tools/wincombo.c): no
+    # guessing by position. The full list goes into the evidence either way.
+    ui_wincombo list >/tmp/mt5ctl-servers.txt 2>&1
+    ui_click $UI_ACCOUNT_SERVER; sleep 1.5; ui_shot /tmp/mt5ctl-servers.png "$UI_CROP_ACCOUNT"
+    xdotool key Escape; sleep 0.5                  # close the list without changing it
+    if ! ui_wincombo select "${MT5_SERVER:-}" >>/tmp/mt5ctl-servers.txt 2>&1; then
+      ui_shot /tmp/mt5ctl-login.png "$UI_CROP_ACCOUNT"
+      ui_dismiss
+      return 3                                     # not in the list: caller falls back to indexes
+    fi
+    sleep 1
+  else
+    ui_click $UI_ACCOUNT_SERVER; sleep 1.5        # opens the list
+    xdotool key Home; sleep 0.3
+    for ((i = 0; i < index; i++)); do xdotool key Down; sleep 0.2; done
+    ui_shot /tmp/mt5ctl-servers.png "$UI_CROP_ACCOUNT"
+    xdotool key Return; sleep 1                    # closes the list on the highlighted entry
+  fi
   ui_shot /tmp/mt5ctl-login.png "$UI_CROP_ACCOUNT"
   ui_click $UI_ACCOUNT_FINISH
+}
+
+# Run the combo-box helper (list | select TEXT) under the terminal's Wine.
+ui_wincombo() {
+  local exe=${GOMQL5_WINCOMBO:-/usr/local/lib/gomql5/wincombo.exe}
+  [ -f "$exe" ] || { echo "wincombo: $exe missing" >&2; return 4; }
+  (cd /tmp && timeout 60 wine "$exe" "$@" 2>/dev/null)
 }
 
 # True when an account is authorized: the main window title then reads

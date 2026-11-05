@@ -13,14 +13,14 @@ loop=$(sed -n '/^ensure_live() {/,/^}/p' "$script")
 [ -n "$fns" ] && [ -n "$loop" ] || { echo "FAIL: functions not found"; exit 1; }
 fail=0
 
-run() { # target-server password-ok -> prints the loop's messages and "exit=N"
+run() { # target-server password-ok [wincombo: ok|missing] -> the loop's messages and "exit=N"
   bash -c '
     set -euo pipefail
     eval "$1"; eval "$2"
     LIST=(FTMO-Server4 FTMO-Server5 FTMO-Server FTMO-Server3 FTMO-Server2 FTMO-Demo)
-    TARGET=$3 PW_OK=$4
-    J=$(mktemp); STATE=$(mktemp); echo 0 >"$STATE"; trap "rm -f $J $STATE" EXIT
-    MT5_LOGIN=12345678 MT5_PASSWORD=x MT5_SERVER=$TARGET FIND_BROKER=FTMO NAME=c OUT=/tmp
+    TARGET=$3 PW_OK=$4 WINCOMBO=$5
+    J=$(mktemp); STATE=$(mktemp); echo 0 >"$STATE"; OUT=$(mktemp -d); trap "rm -rf $J $STATE $OUT" EXIT
+    MT5_LOGIN=12345678 MT5_PASSWORD=x MT5_SERVER=$TARGET FIND_BROKER=FTMO NAME=c
     CONNECT_TIMEOUT=0 LOGIN_TRIES=12 LOGIN_WAIT=2 LOGIN_START=0 SYM=XAUUSD
     say() { echo "$*"; }
     sleep() { :; }
@@ -28,16 +28,26 @@ run() { # target-server password-ok -> prints the loop's messages and "exit=N"
     journal() { cat "$J"; }
     trade_connected() { [ "$(cat "$STATE")" = 1 ]; }
     wait_for() { echo "wait_for $1"; }
-    scripts/mt5ctl.sh() { # -c NAME -o OUT login-broker COMPANY INDEX
-      local idx=$7 srv
-      [ "$idx" -ge ${#LIST[@]} ] && idx=$((${#LIST[@]} - 1))
-      srv=${LIST[$idx]}
+    scripts/mt5ctl.sh() { # -c NAME -o OUT login-broker COMPANY INDEX|name
+      local idx=$7 srv i
+      if [ "$idx" = name ]; then
+        [ "$WINCOMBO" = ok ] || return 4            # helper unavailable: caller falls back
+        { echo "combo 1 entries=${#LIST[@]} selected=0"; for i in "${!LIST[@]}"; do echo "  [$i] ${LIST[$i]}"; done; } >"$OUT/login-name-servers.txt"
+        srv=""
+        for i in "${LIST[@]}"; do [ "$i" = "$MT5_SERVER" ] && srv=$i; done
+        [ -n "$srv" ] || return 3                   # not listed
+      else
+        [ "$idx" -ge ${#LIST[@]} ] && idx=$((${#LIST[@]} - 1))
+        srv=${LIST[$idx]}
+        echo "position $idx" >>"$OUT/positions"
+      fi
       if [ "$srv" = "$TARGET" ] && [ "$PW_OK" = 1 ]; then echo 1 >"$STATE"
       else printf "XX\t2\t00:00:00.000\tNetwork\t%s\n" "'"'"'12345678'"'"': authorization on $srv failed (Invalid account)" >>"$J"; fi
     }
     ensure_live 1
     echo "LOGIN_START=$LOGIN_START"
-  ' _ "$fns" "$loop" "$1" "$2" 2>&1
+    echo "position tries: $(wc -l <"$OUT/positions" 2>/dev/null || echo 0)"
+  ' _ "$fns" "$loop" "$1" "$2" "${3:-missing}" 2>&1
   echo "exit=$?"
 }
 expect() { # name, output, substring
@@ -56,4 +66,20 @@ expect "wrong password: non-zero exit" "$out" "exit=1"
 out=$(run FTMO-Missing 1)
 expect "server not in the list: stops at the end" "$out" "end of FTMO's server list reached"
 expect "server not in the list: non-zero exit" "$out" "exit=1"
+
+# Selection by name (the helper works): no position guessing at all.
+out=$(run FTMO-Demo 1 ok)
+expect "by name: connected" "$out" "wait_for 1 live XAUUSD ticks"
+expect "by name: no position tries" "$out" "position tries: 0"
+
+out=$(run FTMO-Demo 0 ok)
+expect "by name, wrong password: stops with a clear reason" "$out" "FTMO-Demo itself rejected account"
+expect "by name, wrong password: stops (non-zero exit)" "$out" "exit=1"
+
+out=$(run FTMO-Missing 1 ok)
+expect "by name, server not listed: names the list" "$out" "'FTMO-Missing' is not in FTMO's server list: FTMO-Server4,FTMO-Server5,FTMO-Server,FTMO-Server3,FTMO-Server2,FTMO-Demo"
+expect "by name, server not listed: non-zero exit" "$out" "exit=1"
+
+out=$(run FTMO-Demo 1 missing)
+expect "helper missing: falls back to positions and reaches entry 5" "$out" "LOGIN_START=5"
 exit $fail
