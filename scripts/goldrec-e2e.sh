@@ -37,7 +37,10 @@
 # listed in the terminal's config/servers.dat (--servers-dat / --state).
 # --source api needs MYFXBOOK_EMAIL/MYFXBOOK_PASSWORD.
 #
-# Exit 0 = PASS. Runs $E2E_IMAGE (default gomql5/mt5:local; build with scripts/e2e.sh --build).
+# Exit 0 = PASS, else the failure's rc (never 77: scripts/session.sh reports that as SKIP).
+# OUT/result.txt always holds reason=, rc=, stage= and elapsed= (whole-run seconds); a failure
+# prints "FAIL reason=<r>: <why>". --require-live prints a LIVE PASS line too.
+# Runs $E2E_IMAGE (default gomql5/mt5:local; build with scripts/e2e.sh --build).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -67,97 +70,12 @@ TS=$(date +%Y%m%d-%H%M%S)
 OUT="${OUT:-e2e-out/goldrec-$TS}"
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
+rm -f "$OUT/result.txt" # a reused --out must not report the previous run's result
 DATA=$OUT/data
 IMAGE=${E2E_IMAGE:-gomql5/mt5:local} NAME=gomql5-goldrec-$TS TOKEN=goldrec-e2e APP_PID=""
 say() { echo "[goldrec-e2e] $*"; }
 now() { echo "$SECONDS"; } # the clock every wait reads
 lines() { [ -f "$1" ] && wc -l <"$1" || echo 0; }
-
-docker image inspect "$IMAGE" >/dev/null 2>&1 || { say "FAIL: $IMAGE missing (scripts/e2e.sh --build)"; exit 1; }
-go build -o "$OUT/goldrec" ./apps/goldrec
-GOBRIDGE_TOKEN=$TOKEN "$OUT/goldrec" -out "$DATA" -source "$SOURCE" -interval "$INTERVAL" \
-  -listen "127.0.0.1:$PORT" -broker-symbol "$SYM" >"$OUT/goldrec.log" 2>&1 &
-APP_PID=$!
-
-start_terminal() {
-  local acct=()
-  for v in MT5_LOGIN MT5_PASSWORD MT5_SERVER; do [ -n "${!v:-}" ] && acct+=(-e "$v"); done
-  if [ -n "$SERVERS_DAT" ]; then
-    [ -s "$SERVERS_DAT" ] || { say "FAIL: --servers-dat $SERVERS_DAT missing or empty"; exit 1; }
-    acct+=(-v "$(cd "$(dirname "$SERVERS_DAT")" && pwd)/$(basename "$SERVERS_DAT"):/gomql5/servers.dat:ro" -e MT5_SERVERS_DAT=/gomql5/servers.dat)
-  fi
-  if [ -n "$STATE_DIR" ]; then
-    mkdir -p "$STATE_DIR"
-    acct+=(-v "$(cd "$STATE_DIR" && pwd):/gomql5-state" -e GOMQL5_STATE_DIR=/gomql5-state)
-  fi
-  docker run -d --rm --name "$NAME" --network host --shm-size 512m "${acct[@]}" \
-    -e GOBRIDGE_TOKEN=$TOKEN -e GOBRIDGE_HOST=127.0.0.1 -e GOBRIDGE_PORT="$PORT" "$IMAGE" >/dev/null
-  mark_started
-}
-collect() {
-  docker logs "$NAME" >"$OUT/container.log" 2>&1 || true
-  if [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = "true" ]; then
-    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" status >"$OUT/status.txt" 2>&1 || true
-    # Visible terminal windows (main window title shows the account once logged in; dialogs show up here too).
-    scripts/mt5ctl.sh -c "$NAME" exec 'for w in $(xdotool search --onlyvisible --class terminal64 2>/dev/null); do echo "$w $(xdotool getwindowname "$w")"; done' >"$OUT/windows.txt" 2>&1 || true
-    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" shot screen >/dev/null 2>&1 || true
-    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" goto experts-log >/dev/null 2>&1 || true
-    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" goto journal >/dev/null 2>&1 || true
-    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" logs terminal 400 >"$OUT/terminal.log" 2>&1 || true
-    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" logs compile >"$OUT/compile.log" 2>&1 || true
-  fi
-}
-cleanup() {
-  collect
-  [ -n "$APP_PID" ] && kill -INT "$APP_PID" 2>/dev/null && wait "$APP_PID" 2>/dev/null || true
-  if [ $KEEP = 1 ]; then say "--keep: terminal left running as $NAME"; else docker stop -t 30 "$NAME" >/dev/null 2>&1 || true; fi
-}
-trap cleanup EXIT
-
-# fatal: print why the run cannot pass any more and return 0, else return 1.
-fatal() {
-  if ! kill -0 "$APP_PID" 2>/dev/null; then echo "goldrec exited:"; tail -20 "$OUT/goldrec.log"; return 0; fi
-  if grep -q 'broker symbol unavailable' "$OUT/goldrec.log"; then
-    echo "broker symbol $SYM unavailable: $(grep -m1 'broker symbol unavailable' "$OUT/goldrec.log")"; return 0
-  fi
-  if docker logs "$NAME" 2>&1 | grep -qE 'compilation failed|cannot resolve'; then
-    echo "container: $(docker logs "$NAME" 2>&1 | grep -E 'compilation failed|cannot resolve' | head -1)"; return 0
-  fi
-  return 1
-}
-# wait_until DEADLINE COND_DESC TEST_CMD...: poll until TEST_CMD passes (it is
-# tried at least once); FAIL on a fatal condition or once now() reaches DEADLINE.
-wait_until() {
-  local deadline=$1 desc=$2 why; shift 2
-  while :; do
-    if "$@"; then return 0; fi
-    [ "$(now)" -lt "$deadline" ] || break
-    if why=$(fatal); then say "FAIL: $why"; exit 1; fi
-    sleep "$POLL"
-  done
-  say "FAIL: timed out waiting for $desc"; exit 1
-}
-# wait_for COND_DESC TEST_CMD...: wait_until, TIMEOUT seconds from now.
-wait_for() { local desc=$1; shift; wait_until $(($(now) + TIMEOUT)) "$desc" "$@"; }
-have_ticks() { [ "$(lines "$DATA/prices.jsonl")" -ge "$1" ]; }
-have_obs() { [ "$(lines "$DATA/sentiment.jsonl")" -ge 2 ]; }
-# count PATTERN FILE: matching lines, 0 when none or no file. (Not
-# `grep -c … || echo 0`: with no match grep prints 0 AND fails, giving "0\n0".)
-count() { local n; n=$(grep -c -- "$1" "$2" 2>/dev/null); echo "${n:-0}"; }
-connects() { [ "$(count '"kind":"terminal_connected"' "$DATA/events.jsonl")" -ge "$1" ]; }
-have_live_ticks() { [ "$(count '"trade_server_connected":true' "$DATA/prices.jsonl")" -ge "$1" ]; }
-# The LATEST terminal_info event says connected (goldrec writes one per EA
-# connection and on every change; an earlier "true" says nothing after a
-# restart or an account switch).
-trade_connected() { grep '"kind":"terminal_info"' "$DATA/events.jsonl" 2>/dev/null | tail -1 | grep -q '"trade_server_connected":true'; }
-# Echo the terminal's Network journal lines (login progress) once each.
-SEEN_NET=0
-show_network() {
-  local all n
-  all=$(scripts/mt5ctl.sh -c "$NAME" logs terminal 400 2>/dev/null | grep -E $'\tNetwork\t' || true)
-  n=$(printf '%s' "$all" | grep -c . || true)
-  if [ "$n" -gt "$SEEN_NET" ]; then printf '%s\n' "$all" | tail -n $((n - SEEN_NET)) | sed 's/^/[goldrec-e2e] journal: /'; SEEN_NET=$n; fi
-}
 
 # Live-login phase timings, in seconds since the terminal container started
 # (mark_started, called by start_terminal); empty = phase not reached.
@@ -179,7 +97,132 @@ record_timings() {
   say "timings ($RUN_LABEL): $(timings_line)"
   echo "$RUN_LABEL: $(timings_line)" >>"$OUT/timings.txt"
 }
-live_fail() { say "FAIL: $*"; record_timings; exit 1; }
+# The clock result.txt reads, and the stage a result belongs to:
+# preflight, start (from the first container), restart (from its stop).
+START=$(now) STAGE=preflight
+# write_result REASON RC: OUT/result.txt, this run's outcome.
+write_result() {
+  printf 'reason=%s\nrc=%s\nstage=%s\nelapsed=%s\n' "$1" "$2" "$STAGE" "$(($(now) - START))" >"$OUT/result.txt"
+}
+# live_fail REASON RC MSG: the one exit path of a failed run.
+live_fail() {
+  local reason=$1 rc=$2; shift 2
+  write_result "$reason" "$rc"
+  say "FAIL reason=$reason: $*"
+  record_timings
+  exit "$rc"
+}
+# live_fail_why "REASON RC MSG": live_fail with the three in one string (fatal's
+# output, whose MSG can span lines).
+live_fail_why() { local rest=${1#* }; live_fail "${1%% *}" "${rest%% *}" "${rest#* }"; }
+# budget_reason: "REASON RC" for a live budget that ran out, from the phase reached.
+budget_reason() {
+  if [ -z "$T_EA" ]; then echo "ea_timeout 21"
+  elif [ -z "$T_TRADE" ]; then echo "no_broker_connection 24"
+  else echo "no_fresh_ticks 28"; fi
+}
+
+# collect: evidence from the terminal, when it still runs.
+collect() {
+  docker logs "$NAME" >"$OUT/container.log" 2>&1 || true
+  if [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = "true" ]; then
+    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" status >"$OUT/status.txt" 2>&1 || true
+    # Visible terminal windows (main window title shows the account once logged in; dialogs show up here too).
+    scripts/mt5ctl.sh -c "$NAME" exec 'for w in $(xdotool search --onlyvisible --class terminal64 2>/dev/null); do echo "$w $(xdotool getwindowname "$w")"; done' >"$OUT/windows.txt" 2>&1 || true
+    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" shot screen >/dev/null 2>&1 || true
+    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" goto experts-log >/dev/null 2>&1 || true
+    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" goto journal >/dev/null 2>&1 || true
+    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" logs terminal 400 >"$OUT/terminal.log" 2>&1 || true
+    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" logs compile >"$OUT/compile.log" 2>&1 || true
+  fi
+}
+cleanup() {
+  rc=$? # first: set -e can end the script anywhere (go build, docker run)
+  if [ ! -f "$OUT/result.txt" ]; then
+    write_result unclassified "$rc"
+    say "FAIL reason=unclassified: exit $rc outside live_fail (see the output above)"
+  fi
+  collect
+  [ -n "$APP_PID" ] && kill -INT "$APP_PID" 2>/dev/null && wait "$APP_PID" 2>/dev/null || true
+  if [ $KEEP = 1 ]; then say "--keep: terminal left running as $NAME"; else docker stop -t 30 "$NAME" >/dev/null 2>&1 || true; fi
+}
+trap cleanup EXIT
+
+docker image inspect "$IMAGE" >/dev/null 2>&1 || live_fail image_stale 15 "$IMAGE missing (scripts/e2e.sh --build)"
+go build -o "$OUT/goldrec" ./apps/goldrec
+GOBRIDGE_TOKEN=$TOKEN "$OUT/goldrec" -out "$DATA" -source "$SOURCE" -interval "$INTERVAL" \
+  -listen "127.0.0.1:$PORT" -broker-symbol "$SYM" >"$OUT/goldrec.log" 2>&1 &
+APP_PID=$!
+
+start_terminal() {
+  local acct=()
+  for v in MT5_LOGIN MT5_PASSWORD MT5_SERVER; do [ -n "${!v:-}" ] && acct+=(-e "$v"); done
+  if [ -n "$SERVERS_DAT" ]; then
+    [ -s "$SERVERS_DAT" ] || live_fail no_route 13 "--servers-dat $SERVERS_DAT missing or empty: $SERVERS_DAT_HINT"
+    acct+=(-v "$(cd "$(dirname "$SERVERS_DAT")" && pwd)/$(basename "$SERVERS_DAT"):/gomql5/servers.dat:ro" -e MT5_SERVERS_DAT=/gomql5/servers.dat)
+  fi
+  if [ -n "$STATE_DIR" ]; then
+    mkdir -p "$STATE_DIR"
+    acct+=(-v "$(cd "$STATE_DIR" && pwd):/gomql5-state" -e GOMQL5_STATE_DIR=/gomql5-state)
+  fi
+  STAGE=$RUN_LABEL
+  docker run -d --rm --name "$NAME" --network host --shm-size 512m "${acct[@]}" \
+    -e GOBRIDGE_TOKEN=$TOKEN -e GOBRIDGE_HOST=127.0.0.1 -e GOBRIDGE_PORT="$PORT" "$IMAGE" >/dev/null
+  mark_started
+}
+# fatal: print "REASON RC why" (see live_fail_why) when the run cannot pass any
+# more and return 0, else return 1.
+fatal() {
+  local line
+  if ! kill -0 "$APP_PID" 2>/dev/null; then echo "recorder_died 30 goldrec exited:"; tail -20 "$OUT/goldrec.log"; return 0; fi
+  if grep -q 'broker symbol unavailable' "$OUT/goldrec.log"; then
+    echo "symbol_missing 27 broker symbol $SYM unavailable: $(grep -m1 'broker symbol unavailable' "$OUT/goldrec.log")"; return 0
+  fi
+  if docker logs "$NAME" 2>&1 | grep -qE 'compilation failed|cannot resolve'; then
+    line=$(docker logs "$NAME" 2>&1 | grep -E 'compilation failed|cannot resolve' | head -1)
+    case $line in
+      *'compilation failed'*) echo "compile_failed 20 container: $line" ;;
+      *) echo "ea_timeout 21 container: $line" ;; # the EA can never reach GOBRIDGE_HOST
+    esac
+    return 0
+  fi
+  return 1
+}
+# wait_until DEADLINE REASON RC COND_DESC TEST_CMD...: poll until TEST_CMD passes
+# (it is tried at least once); FAIL on a fatal condition, or with REASON and RC
+# once now() reaches DEADLINE.
+wait_until() {
+  local deadline=$1 reason=$2 rc=$3 desc=$4 why; shift 4
+  while :; do
+    if "$@"; then return 0; fi
+    [ "$(now)" -lt "$deadline" ] || break
+    if why=$(fatal); then live_fail_why "$why"; fi
+    sleep "$POLL"
+  done
+  live_fail "$reason" "$rc" "timed out waiting for $desc"
+}
+# wait_for REASON RC COND_DESC TEST_CMD...: wait_until, TIMEOUT seconds from now.
+wait_for() { local reason=$1 rc=$2 desc=$3; shift 3; wait_until $(($(now) + TIMEOUT)) "$reason" "$rc" "$desc" "$@"; }
+have_ticks() { [ "$(lines "$DATA/prices.jsonl")" -ge "$1" ]; }
+have_obs() { [ "$(lines "$DATA/sentiment.jsonl")" -ge 2 ]; }
+# count PATTERN FILE: matching lines, 0 when none or no file. (Not
+# `grep -c … || echo 0`: with no match grep prints 0 AND fails, giving "0\n0".)
+count() { local n; n=$(grep -c -- "$1" "$2" 2>/dev/null); echo "${n:-0}"; }
+connects() { [ "$(count '"kind":"terminal_connected"' "$DATA/events.jsonl")" -ge "$1" ]; }
+have_live_ticks() { [ "$(count '"trade_server_connected":true' "$DATA/prices.jsonl")" -ge "$1" ]; }
+# The LATEST terminal_info event says connected (goldrec writes one per EA
+# connection and on every change; an earlier "true" says nothing after a
+# restart or an account switch).
+trade_connected() { grep '"kind":"terminal_info"' "$DATA/events.jsonl" 2>/dev/null | tail -1 | grep -q '"trade_server_connected":true'; }
+# Echo the terminal's Network journal lines (login progress) once each.
+SEEN_NET=0
+show_network() {
+  local all n
+  all=$(scripts/mt5ctl.sh -c "$NAME" logs terminal 400 2>/dev/null | grep -E $'\tNetwork\t' || true)
+  n=$(printf '%s' "$all" | grep -c . || true)
+  if [ "$n" -gt "$SEEN_NET" ]; then printf '%s\n' "$all" | tail -n $((n - SEEN_NET)) | sed 's/^/[goldrec-e2e] journal: /'; SEEN_NET=$n; fi
+}
+
 # login_failure SERVER (stdin = terminal journal): print why a config login to
 # SERVER cannot succeed and return 0, or return 1 when the journal shows no such
 # sign (yet). Two shapes, both from real runs (testdata/journal-ftmo-wizard.txt):
@@ -208,7 +251,7 @@ login_failure() {
 # up to LIVE_NEEDED live ticks in all, by TIMEOUT seconds after the start.
 ensure_live() {
   local conns=$1 before=$2 need=$3 el why rem
-  [ -n "${MT5_LOGIN:-}" ] && [ -n "${MT5_PASSWORD:-}" ] || { say "FAIL: --require-live needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER"; exit 1; }
+  [ -n "${MT5_LOGIN:-}" ] && [ -n "${MT5_PASSWORD:-}" ] || live_fail env_missing 10 "--require-live needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER"
   while :; do
     show_network # (slow: it reads the journal; so is the login_failure check below)
     el=$(($(now) - T0))
@@ -223,12 +266,15 @@ ensure_live() {
       fi
     fi
     if [ -z "$T_TRADE" ] && why=$(scripts/mt5ctl.sh -c "$NAME" logs terminal 5000 2>/dev/null | login_failure "${MT5_SERVER:-}"); then
-      live_fail "$why (${el}s since the container started; phase: $(phase))"
+      case $why in
+        *'fell back to'*) live_fail fallback_server 22 "$why (${el}s since the container started; phase: $(phase))" ;;
+        *) live_fail auth_rejected 23 "$why (${el}s since the container started; phase: $(phase))" ;;
+      esac
     fi
-    if why=$(fatal); then live_fail "$why"; fi
+    if why=$(fatal); then live_fail_why "$why"; fi
     el=$(($(now) - T0))
     if [ "$el" -ge "$LIVE_BUDGET" ]; then
-      live_fail "no live $SYM tick within the ${LIVE_BUDGET}s live budget (account $MT5_LOGIN on ${MT5_SERVER:-?}): ${el}s since the container started; phase: $(phase)"
+      live_fail_why "$(budget_reason) no live $SYM tick within the ${LIVE_BUDGET}s live budget (account $MT5_LOGIN on ${MT5_SERVER:-?}): ${el}s since the container started; phase: $(phase)"
     fi
     # Nap at most until the budget, so the last poll lands on it (the polls
     # themselves take time: count from the clock, not from el).
@@ -237,7 +283,26 @@ ensure_live() {
   done
   record_timings
   [ "$need" -gt 1 ] || return 0
-  wait_until $((T0 + TIMEOUT)) "$need live $SYM ticks (${TIMEOUT}s after the container start)" have_live_ticks $((before + need))
+  wait_until $((T0 + TIMEOUT)) no_fresh_ticks 28 "$need live $SYM ticks (${TIMEOUT}s after the container start)" have_live_ticks $((before + need))
+}
+
+# account_field FIELD: FIELD of the latest account event, ? without one (never the
+# hello's value: that can be a stale login or the fallback server).
+account_field() {
+  grep '"kind":"account"' "$DATA/events.jsonl" 2>/dev/null | tail -1 | sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p' | grep . || echo '?'
+}
+# live_pass: the verdict line of a --require-live PASS; with --restart, counts
+# and timings are per container (first/restarted).
+live_pass() {
+  local live fresh first image build
+  live=$(count '"trade_server_connected":true' "$DATA/prices.jsonl")
+  fresh=$live first=$(secs "$T_TICK")
+  if [ "$RESTART" = 1 ]; then
+    fresh=$before_live/$((live - before_live)) first=$(secs "$first_live_before")/$(secs "$T_TICK")
+  fi
+  image=$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null | sed 's/^sha256://' | cut -c1-12) || true
+  build=$(grep -o '"build":[0-9]*' "$DATA/events.jsonl" 2>/dev/null | tail -1 | cut -d: -f2) || true
+  say "LIVE PASS: server=$(account_field server) symbol=$SYM fresh=$fresh first_live=$first image=${image:-?} build=${build:-?} company=$(account_field company)"
 }
 
 say "goldrec on 127.0.0.1:$PORT (source=$SOURCE, broker symbol $SYM); terminal $NAME"
@@ -245,26 +310,30 @@ say "goldrec on 127.0.0.1:$PORT (source=$SOURCE, broker symbol $SYM); terminal $
 start_terminal
 if [ $LIVE = 1 ]; then
   ensure_live 1 0 "$MIN_TICKS"
+else
+  wait_for ea_timeout 21 "EA connection" connects 1
 fi
-wait_for "$MIN_TICKS $SYM ticks" have_ticks "$MIN_TICKS"
-wait_for "2 positioning observations" have_obs
+wait_for no_fresh_ticks 28 "$MIN_TICKS $SYM ticks" have_ticks "$MIN_TICKS"
+wait_for unclassified 1 "2 positioning observations" have_obs
 if [ $RESTART = 1 ]; then
+  STAGE=restart
+  first_live_before=$T_TICK
   before=$(lines "$DATA/prices.jsonl")
   before_live=$(count '"trade_server_connected":true' "$DATA/prices.jsonl")
   before_conn=$(count '"kind":"terminal_connected"' "$DATA/events.jsonl")
   say "restarting terminal (had $before ticks, $before_conn EA connections)"
   docker stop -t 30 "$NAME" >/dev/null
-  wait_for "disconnect event" grep -q '"kind":"terminal_disconnected"' "$DATA/events.jsonl"
+  wait_for unclassified 1 "disconnect event" grep -q '"kind":"terminal_disconnected"' "$DATA/events.jsonl"
   gone() { ! docker inspect "$NAME" >/dev/null 2>&1; }
-  wait_for "old container removed" gone
+  wait_for unclassified 1 "old container removed" gone
   RUN_LABEL=restart
   start_terminal # a fresh container starts logged out again: the budget starts over
   if [ $LIVE = 1 ]; then
     ensure_live $((before_conn + 1)) "$before_live" 1
   else
-    wait_for "reconnect" connects $((before_conn + 1))
+    wait_for ea_timeout 21 "reconnect" connects $((before_conn + 1))
   fi
-  wait_for "ticks after reconnect" have_ticks $((before + 1))
+  wait_for no_fresh_ticks 28 "ticks after reconnect" have_ticks $((before + 1))
 fi
 sleep 2 # let one flush/status cycle pass
 say "PASS: $(lines "$DATA/prices.jsonl") ticks, $(lines "$DATA/sentiment.jsonl") positioning observations, $(grep -c terminal_connected "$DATA/events.jsonl") connections"
@@ -275,3 +344,5 @@ fi
 say "      first tick: $(head -1 "$DATA/prices.jsonl")"
 say "      last observation: $(tail -1 "$DATA/sentiment.jsonl" | cut -c1-400)"
 say "      evidence: $OUT (goldrec.log, data/, terminal.log, screen.png, journal.png, experts-log.png)"
+if [ $LIVE = 1 ]; then live_pass; fi
+write_result ok 0 # last: an error above must not leave a green result
