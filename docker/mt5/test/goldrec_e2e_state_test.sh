@@ -23,7 +23,14 @@ cp "$script" "$tree/scripts/goldrec-e2e.sh"
 echo 'ea source' >"$tree/mql5/Experts/GoBridge/GoBridge.mq5"
 echo 'lib' >"$tree/docker/mt5/lib.sh"
 echo 'entrypoint' >"$tree/docker/mt5/entrypoint.sh"
-printf '#!/bin/bash\nexit 1\n' >"$tree/scripts/mt5ctl.sh"
+# The stub mt5ctl: the window title agrees with the expected server; nothing else to see.
+cat >"$tree/scripts/mt5ctl.sh" <<'EOF'
+#!/bin/bash
+case $* in
+  *ui_main_window*) echo "1 - $MT5_SERVER: Demo Account - Read Only - Hedge" ;;
+  *) exit 1 ;;
+esac
+EOF
 # build_image: what `docker build` does with the tree, per docker/mt5/Dockerfile.
 build_image() {
   rm -rf "$image"
@@ -68,15 +75,27 @@ while [ \$# -gt 0 ]; do [ "\$1" = -o ] && cp "$T/fake-goldrec" "\$2"; shift; don
 EOF
 # The fake recorder: one connection, a trade server, ticks unless FAKE_NO_TICKS
 # is set, and enough positioning observations; then it runs until interrupted.
+# -check-live: its verdict, ok unless FAKE_CHECK or FAKE_NO_TICKS says otherwise.
 # Perl, not bash: an async bash job ignores SIGINT, which the script sends.
 cat >"$T/fake-goldrec" <<'PERL'
 #!/usr/bin/perl
+if (($ARGV[0] // '') eq '-check-live') {
+  my %v = (fallback => [22, 'reason=fallback_server conn=1 records=4 fresh=3/3 server="MetaQuotes-Demo"'],
+           wrong    => [25, 'reason=wrong_account conn=1 records=4 fresh=3/3 server="x"'],
+           stale    => [29, 'reason=stale_ticks conn=1 records=4 fresh=3/3 last_tick_age_ms=999999']);
+  my $c = $v{$ENV{FAKE_CHECK} // ''};
+  $c //= [64, 'reason=pending conn=1 records=0 fresh=0/3 waiting=ticks'] if $ENV{FAKE_NO_TICKS};
+  $c //= [0, 'reason=ok conn=1 records=4 fresh=3/3 last_tick_age_ms=900 server="x" company="y"'];
+  print "$c->[1]\n";
+  exit $c->[0];
+}
 my $out;
 for my $i (0 .. $#ARGV) { $out = $ARGV[$i + 1] if $ARGV[$i] eq '-out' }
 mkdir $out;
 sub append { open my $fh, '>>', "$out/$_[0]" or die; print $fh "$_[1]\n"; close $fh }
-append('events.jsonl', '{"kind":"terminal_connected"}');
-append('events.jsonl', '{"kind":"terminal_info","trade_server_connected":true}');
+append('events.jsonl', '{"kind":"run_start"}');
+append('events.jsonl', '{"conn":1,"kind":"terminal_connected"}');
+append('events.jsonl', '{"conn":1,"kind":"terminal_info","trade_server_connected":true}');
 append('prices.jsonl', '{"trade_server_connected":true,"n":1}') unless $ENV{FAKE_NO_TICKS};
 append('sentiment.jsonl', '{"n":1}');
 append('sentiment.jsonl', '{"n":2}');
@@ -144,6 +163,17 @@ same "failed run: exit" "$RC" 28
 same "failed run: result" "$(sed -n 1p "$O/run/result.txt")" "reason=no_fresh_ticks"
 same "failed run: state unchanged" "$(cat "$st/servers.dat" "$st/servers.dat.verified")" "$before"
 same "failed run: the run's own copy holds the terminal's bytes" "$(cat "$O/run/state/servers.dat")" "terminal saved routes"
+
+# Promotion needs the classifier's reason=ok: ticks and observations are all there,
+# but the verdict says the account is not the expected one, or the ticks are stale.
+for check in fallback:22 wrong:25 stale:29; do
+  st=$(state "$SRV")
+  before=$(cat "$st/servers.dat" "$st/servers.dat.verified")
+  FAKE_CHECK=${check%:*} FAKE_TERMINAL_DAT="terminal saved routes" run_script --require-live --live-budget 30 --state "$st"
+  same "${check%:*} verdict: exit" "$RC" "${check#*:}"
+  same "${check%:*} verdict: state unchanged" "$(cat "$st/servers.dat" "$st/servers.dat.verified")" "$before"
+  if grep -q 'LIVE PASS' "$O/console.txt"; then echo "FAIL ${check%:*} verdict: LIVE PASS printed"; fail=1; else echo "ok   ${check%:*} verdict: no LIVE PASS"; fi
+done
 
 # Without --require-live nothing is promoted, even on a PASS.
 st=$(state "$SRV")
