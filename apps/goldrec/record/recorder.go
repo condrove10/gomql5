@@ -57,6 +57,14 @@ type Config struct {
 
 	FlushEvery  time.Duration // price stream flush period, default 1s
 	StatusEvery time.Duration // default 5s
+
+	// HealthEvery is how often a connected terminal is checked
+	// (TerminalInfo, tick silence). Default 10s.
+	HealthEvery time.Duration
+	// ResyncQuiet: while the terminal is connected to a trade server and no
+	// tick has arrived for this long, re-select and re-subscribe the symbol
+	// (and record why). Default 60s.
+	ResyncQuiet time.Duration
 }
 
 // Recorder is safe to run once.
@@ -135,6 +143,12 @@ func New(cfg Config) (*Recorder, error) {
 	}
 	if cfg.StatusEvery <= 0 {
 		cfg.StatusEvery = 5 * time.Second
+	}
+	if cfg.HealthEvery <= 0 {
+		cfg.HealthEvery = 10 * time.Second
+	}
+	if cfg.ResyncQuiet <= 0 {
+		cfg.ResyncQuiet = 60 * time.Second
 	}
 	var b [8]byte
 	rand.Read(b[:])
@@ -518,9 +532,11 @@ func (r *Recorder) serveTerminal(ctx context.Context, term *mt5.Terminal) error 
 		return nil // drop this connection; the EA reconnects
 	}
 	r.cfg.Log.Info("subscribed to broker ticks", "symbol", sym)
-	summary := time.NewTicker(10 * time.Second)
+	summary := time.NewTicker(r.cfg.HealthEvery)
 	defer summary.Stop()
 	var n uint64
+	// quietSince: last tick or last (re)subscription on this connection.
+	quietSince := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
@@ -533,6 +549,17 @@ func (r *Recorder) serveTerminal(ctx context.Context, term *mt5.Terminal) error 
 				r.mu.Lock()
 				r.st.TradeServerConnected = tradeConn
 				r.mu.Unlock()
+				if tradeConn {
+					// The account sync after a login can rebuild Market Watch
+					// and drop a symbol selected before it; the EA then polls
+					// SymbolInfoTick in vain, silently (user's FTMO run:
+					// subscribed 23:43:39, synchronized 23:43:44, 0 ticks).
+					r.resync(ictx, term, sym, "trade_server_connected")
+					quietSince = time.Now()
+				}
+			} else if tradeConn && time.Since(quietSince) >= r.cfg.ResyncQuiet {
+				r.resync(ictx, term, sym, "no_ticks")
+				quietSince = time.Now()
 			}
 			icancel()
 			r.mu.Lock()
@@ -558,6 +585,7 @@ func (r *Recorder) serveTerminal(ctx context.Context, term *mt5.Terminal) error 
 				return fmt.Errorf("record: prices: %w", err)
 			}
 			n++
+			quietSince = now
 			r.mu.Lock()
 			r.st.Ticks++
 			r.st.LastTickReceived = now
@@ -568,6 +596,35 @@ func (r *Recorder) serveTerminal(ctx context.Context, term *mt5.Terminal) error 
 			}
 		}
 	}
+}
+
+// resync re-selects and re-subscribes the broker symbol and records what the
+// terminal says about it, so a silent tick stream can be told apart:
+// select error / not selected (symbol missing or renamed), a quote with an
+// old time (market closed), or a fresh quote (ticks should now flow).
+func (r *Recorder) resync(ctx context.Context, term *mt5.Terminal, sym, reason string) {
+	kv := []any{"reason", reason, "broker_symbol", sym, "login", term.Hello().Login}
+	if err := term.SymbolSelect(ctx, sym, true); err != nil {
+		kv = append(kv, "select_error", err.Error())
+		cands, _ := term.SymbolsGet(ctx, "*XAU*,*GOLD*", false)
+		kv = append(kv, "candidates", cands)
+	}
+	if si, err := term.SymbolInfo(ctx, sym); err == nil {
+		kv = append(kv, "selected", si.Select, "visible", si.Visible, "path", si.Path, "description", si.Description)
+	} else {
+		kv = append(kv, "symbol_info_error", err.Error())
+	}
+	if tk, err := term.SymbolInfoTick(ctx, sym); err == nil {
+		kv = append(kv, "quote_bid", tk.Bid, "quote_ask", tk.Ask, "quote_time_msc", tk.TimeMsc,
+			"quote_broker_wallclock", mt5.ServerTimeMsc(tk.TimeMsc).Format("2006-01-02T15:04:05.000"))
+	} else {
+		kv = append(kv, "quote_error", err.Error())
+	}
+	if err := term.SubscribeTicks(ctx, sym); err != nil {
+		kv = append(kv, "subscribe_error", err.Error())
+	}
+	r.event("symbol_resync", kv...)
+	r.cfg.Log.Info("re-selected and re-subscribed broker symbol", kv...)
 }
 
 // ---- replay -----------------------------------------------------------------

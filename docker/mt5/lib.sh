@@ -18,6 +18,10 @@ UI_OPTIONS_URL_ADD_ROW="500 631"  # Experts tab: "+ add new URL" row
 UI_OPTIONS_OK="759 765"           # Options dialog: OK
 UI_TOOLBOX_TAB_EXPERTS="402 993"  # bottom Toolbox: "Experts" tab (EA Print output)
 UI_TOOLBOX_TAB_JOURNAL="472 993"  # bottom Toolbox: "Journal" tab (terminal log)
+# Logged in to an account the Toolbox gains Trade/Exposure/History/Company tabs
+# and Experts/Journal move right (measured on a user's FTMO-Demo screenshot, build 6300).
+UI_TOOLBOX_TAB_EXPERTS_ACCOUNT="656 993"
+UI_TOOLBOX_TAB_JOURNAL_ACCOUNT="712 993"
 UI_MENU_FILE="20 41"              # menu bar: File
 UI_MENU_FILE_OPEN_ACCOUNT="75 344" # File > Open an Account (company search wizard)
 UI_ACCOUNT_SEARCH_FIELD="570 360" # wizard: "add new company like 'CompanyName'..." field
@@ -171,8 +175,23 @@ ui_login_existing() {
   ui_click $UI_ACCOUNT_FINISH
 }
 
-ui_toolbox_experts() { ui_click $UI_TOOLBOX_TAB_EXPERTS; sleep 1; }
-ui_toolbox_journal() { ui_click $UI_TOOLBOX_TAB_JOURNAL; sleep 1; }
+# True when an account is authorized: the main window title then reads
+# "<login> - <server>: Demo Account - Read Only - …" (or "Real Account");
+# logged out it is "MetaTrader 5 - …", and with a login that failed to
+# authorize "<login> - <server> - Netting" (both with the plain Toolbox).
+ui_account_authorized() {
+  local w
+  w=$(ui_main_window) || return 1
+  [[ "$(xdotool getwindowname "$w" 2>/dev/null)" == *" Account - "* ]]
+}
+ui_toolbox_experts() {
+  if ui_account_authorized; then ui_click $UI_TOOLBOX_TAB_EXPERTS_ACCOUNT; else ui_click $UI_TOOLBOX_TAB_EXPERTS; fi
+  sleep 1
+}
+ui_toolbox_journal() {
+  if ui_account_authorized; then ui_click $UI_TOOLBOX_TAB_JOURNAL_ACCOUNT; else ui_click $UI_TOOLBOX_TAB_JOURNAL; fi
+  sleep 1
+}
 
 # Screenshot the virtual screen: ui_shot <out.png> [crop-geometry]
 ui_shot() {
