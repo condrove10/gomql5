@@ -16,7 +16,8 @@
 #                       counted from the container start, on reaching MIN_TICKS live ticks
 #   --port P            (default 7789)
 #   --require-live      fail unless ticks arrive with trade_server_connected=true
-#                       (needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER); fails at once when
+#                       (needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER); refuses to start the
+#                       terminal when preflight_live fails, and fails at once when
 #                       the journal shows the login cannot work (see login_failure)
 #   --live-budget S     with --require-live: the first live tick must arrive within S
 #                       seconds of the terminal container starting (default 120), else
@@ -35,6 +36,10 @@
 # when set (otherwise it runs without a trade server: cached quotes only). The
 # login is config-only (no UI): MT5_SERVER must be "address:port" or a name
 # listed in the terminal's config/servers.dat (--servers-dat / --state).
+# MT5_EXPECT_SERVER is the server the account must end up on: it defaults to
+# MT5_SERVER when that is a name, is required when that is address:port (take it
+# from the broker's account email, never from terminal output), and may not be a
+# MetaQuotes-* server (the terminal's own fallback).
 # --source api needs MYFXBOOK_EMAIL/MYFXBOOK_PASSWORD.
 #
 # Exit 0 = PASS, else the failure's rc (never 77: scripts/session.sh reports that as SKIP).
@@ -121,6 +126,8 @@ budget_reason() {
   elif [ -z "$T_TRADE" ]; then echo "no_broker_connection 24"
   else echo "no_fresh_ticks 28"; fi
 }
+# How to give the terminal a route to a named server (no_route, login_failure).
+SERVERS_DAT_HINT="provide a servers.dat that lists it (MT5_SERVERS_DAT=/path/to/servers.dat, copied from a desktop MT5 that has logged in to the broker once: File > Open Data Folder > config/servers.dat) or set MT5_SERVER=address:port"
 
 # collect: evidence from the terminal, when it still runs.
 collect() {
@@ -148,7 +155,60 @@ cleanup() {
 }
 trap cleanup EXIT
 
-docker image inspect "$IMAGE" >/dev/null 2>&1 || live_fail image_stale 15 "$IMAGE missing (scripts/e2e.sh --build)"
+# image_id: the image's ID, short; fails when there is no such image.
+image_id() { docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null | sed 's/^sha256://' | cut -c1-12; }
+# sh -c program, on the host and in the image: a hash of the mql5 tree $1 and the
+# files $2 and $3. Contents and relative names only: mtimes mean nothing in a zip
+# extraction.
+CONTENT_HASH='{ (cd "$1" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do sha256sum "$f"; done); sha256sum <"$2"; sha256sum <"$3"; } | sha256sum | cut -d" " -f1'
+# check_state_route: a name with no explicit --servers-dat needs the --state copy,
+# and that copy counts only with a marker for this server and these very bytes: a
+# failed run also leaves a servers.dat behind.
+check_state_route() {
+  local dat=$STATE_DIR/servers.dat
+  [ -n "$STATE_DIR" ] && [ -s "$dat" ] || live_fail no_route 13 "MT5_SERVER is a name and no servers.dat lists it: $SERVERS_DAT_HINT"
+  [ "$(cat "$dat.verified" 2>/dev/null)" = "server=$EXPECT_SERVER"$'\n'"sha256=$(sha256sum <"$dat" | cut -d' ' -f1)" ] ||
+    live_fail route_unverified 14 "the --state servers.dat has no servers.dat.verified marker for this server and this file: pass the file with --servers-dat (MT5_SERVERS_DAT), or get one PASS"
+}
+# preflight_live: everything a --require-live run needs that can be checked before
+# the terminal starts, cheapest first. Messages name variables, never values. Sets
+# EXPECT_SERVER.
+preflight_live() {
+  local v missing="" id want got
+  for v in MT5_LOGIN MT5_PASSWORD MT5_SERVER; do [ -n "${!v:-}" ] || missing+=" $v"; done
+  [ -z "$missing" ] || live_fail env_missing 10 "--require-live needs$missing"
+  EXPECT_SERVER=${MT5_EXPECT_SERVER:-}
+  if [ -z "$EXPECT_SERVER" ]; then
+    case $MT5_SERVER in
+      *:*) live_fail expect_server_missing 12 "MT5_SERVER is address:port: set MT5_EXPECT_SERVER to the server on the broker's account email" ;;
+      *) EXPECT_SERVER=$MT5_SERVER ;;
+    esac
+  fi
+  case $EXPECT_SERVER in
+    MetaQuotes-*) live_fail expect_server_missing 12 "the expected server (MT5_EXPECT_SERVER, default MT5_SERVER) is a MetaQuotes-* server, the terminal's own fallback: a PASS would prove nothing" ;;
+  esac
+  [ -z "$SERVERS_DAT" ] || [ -s "$SERVERS_DAT" ] || live_fail no_route 13 "the --servers-dat file is missing or empty: $SERVERS_DAT_HINT"
+  case $MT5_SERVER in
+    *:*) ;; # the address is the route
+    *) [ -n "$SERVERS_DAT" ] || check_state_route ;;
+  esac
+  id=$(image_id) || live_fail image_stale 15 "$IMAGE missing (scripts/e2e.sh --build)"
+  say "preflight: image $IMAGE id=${id:-?}"
+  want=$(sh -c "$CONTENT_HASH" sh mql5 docker/mt5/lib.sh docker/mt5/entrypoint.sh)
+  got=$(docker run --rm --entrypoint sh "$IMAGE" -c "$CONTENT_HASH" sh /opt/gobridge/mql5 /usr/local/lib/gomql5/lib.sh /usr/local/bin/entrypoint.sh 2>/dev/null) || got=""
+  [ -n "$want" ] && [ "$want" = "$got" ] || live_fail image_stale 15 "$IMAGE does not hold the local mql5/, docker/mt5/lib.sh and docker/mt5/entrypoint.sh (scripts/e2e.sh --build)"
+  case $MT5_SERVER in
+    *:*) timeout 5 bash -c 'exec 3<>"/dev/tcp/$0/$1"' "${MT5_SERVER%:*}" "${MT5_SERVER##*:}" 2>/dev/null ||
+      live_fail broker_unreachable 16 "no TCP connection within 5 s to the address in MT5_SERVER" ;;
+  esac
+  say "preflight: today is $(date -u +%A) (UTC); evidence decides whether the market is open, not this note"
+  say "preflight ok"
+}
+if [ $LIVE = 1 ]; then
+  preflight_live
+else
+  docker image inspect "$IMAGE" >/dev/null 2>&1 || live_fail image_stale 15 "$IMAGE missing (scripts/e2e.sh --build)"
+fi
 go build -o "$OUT/goldrec" ./apps/goldrec
 GOBRIDGE_TOKEN=$TOKEN "$OUT/goldrec" -out "$DATA" -source "$SOURCE" -interval "$INTERVAL" \
   -listen "127.0.0.1:$PORT" -broker-symbol "$SYM" >"$OUT/goldrec.log" 2>&1 &
@@ -229,7 +289,6 @@ show_network() {
 #   * a server name the terminal doesn't know (not in config/servers.dat) falls
 #     back to MetaQuotes-Demo: "authorization on MetaQuotes-Demo failed (Invalid account)";
 #   * the server itself rejects the account: "authorization on SERVER failed (...)".
-SERVERS_DAT_HINT="provide a servers.dat that lists it (MT5_SERVERS_DAT=/path/to/servers.dat, copied from a desktop MT5 that has logged in to the broker once: File > Open Data Folder > config/servers.dat) or set MT5_SERVER=address:port"
 login_failure() {
   local srv=$1 net line
   net=$(grep -E $'\tNetwork\t' || true) # (`|| true`: no match is normal under set -euo pipefail)
@@ -300,7 +359,7 @@ live_pass() {
   if [ "$RESTART" = 1 ]; then
     fresh=$before_live/$((live - before_live)) first=$(secs "$first_live_before")/$(secs "$T_TICK")
   fi
-  image=$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null | sed 's/^sha256://' | cut -c1-12) || true
+  image=$(image_id) || true
   build=$(grep -o '"build":[0-9]*' "$DATA/events.jsonl" 2>/dev/null | tail -1 | cut -d: -f2) || true
   say "LIVE PASS: server=$(account_field server) symbol=$SYM fresh=$fresh first_live=$first image=${image:-?} build=${build:-?} company=$(account_field company)"
 }

@@ -171,6 +171,9 @@ case $1 in
     [ "$3" != -f ] || echo sha256:abcdef0123456789abcdef
     ;;
   run)
+    if [ "$2" = --rm ]; then # preflight's content hash: run --rm --entrypoint sh IMAGE -c S sh A B C
+      exec sh -c "$7" sh "$STUB_TREE/mql5" "$STUB_TREE/docker/mt5/lib.sh" "$STUB_TREE/docker/mt5/entrypoint.sh"
+    fi
     echo run >>"$STUB_OUT/docker-runs"
     [ "${STUB_RUN_RC:-0}" = 0 ] || exit "$STUB_RUN_RC"
     feed=${STUB_FEED:-full}
@@ -214,7 +217,7 @@ whole() {
   local o="$T/whole.$RANDOM"; mkdir -p "$o/data"
   [ -z "${STUB_OLD_RESULT:-}" ] || echo "$STUB_OLD_RESULT" >"$o/result.txt"
   PATH="$T/bin:$PATH" REAL_SLEEP="$real_sleep" STUB_OUT="$o" STUB_RECORDER_BIN="$T/recorder" E2E_IMAGE=stub/image \
-    MT5_LOGIN="${STUB_LOGIN:-}" MT5_PASSWORD="${STUB_PASSWORD:-}" MT5_SERVER="${STUB_SERVER:-}" \
+    STUB_TREE="$here/../../.." MT5_LOGIN="${STUB_LOGIN:-}" MT5_PASSWORD="${STUB_PASSWORD:-}" MT5_SERVER="${STUB_SERVER:-}" MT5_EXPECT_SERVER="" \
     timeout 60 bash "$script" --out "$o" --min-ticks 1 "$@" 2>&1
   echo "exit=$?"
   echo "docker_runs=$(cat "$o/docker-runs" 2>/dev/null | wc -l)"
@@ -281,13 +284,14 @@ reason "pass, no account" "$out" ok 0 start
 has "pass, no account: PASS line" "$out" "[goldrec-e2e] PASS: 1 ticks"
 hasnt "pass, no account: not a live pass" "$out" "LIVE PASS"
 
-out=$(STUB_LOGIN=12345678 STUB_PASSWORD=x STUB_SERVER=FTMO-Demo whole --require-live)
+echo 'servers bytes' >"$T/servers.dat" # the route preflight_live asks for
+out=$(STUB_LOGIN=12345678 STUB_PASSWORD=x STUB_SERVER=FTMO-Demo whole --require-live --servers-dat "$T/servers.dat")
 reason "live pass" "$out" ok 0 start
 if [[ "$out" =~ \[goldrec-e2e\]\ LIVE\ PASS:\ server=FTMO-Demo\ symbol=XAUUSD\ fresh=1\ first_live=[0-9]+s\ image=abcdef012345\ build=6300\ company=FTMO\ S\.R\.O\. ]]; then
   echo "ok   live pass: LIVE PASS line, identity from the account event"
 else echo "FAIL live pass: LIVE PASS line in: $(echo "$out" | tr '\n' '|')"; fail=1; fi
 
-out=$(STUB_LOGIN=12345678 STUB_PASSWORD=x STUB_SERVER=FTMO-Demo whole --require-live --restart)
+out=$(STUB_LOGIN=12345678 STUB_PASSWORD=x STUB_SERVER=FTMO-Demo whole --require-live --restart --servers-dat "$T/servers.dat")
 reason "live pass with a restart" "$out" ok 0 restart
 if [[ "$out" =~ LIVE\ PASS:\ server=FTMO-Demo\ symbol=XAUUSD\ fresh=1/1\ first_live=[0-9]+s/[0-9]+s\ image=abcdef012345\ build=6300\ company=FTMO ]]; then
   echo "ok   live pass with a restart: per-container counts"
