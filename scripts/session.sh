@@ -15,7 +15,8 @@
 #   e2e          scripts/e2e.sh                   (bridge smoke test)
 #   e2e-goldrec  scripts/goldrec-e2e.sh on EURUSD with a restart (pipeline; works without an account)
 #   e2e-live     scripts/goldrec-e2e.sh --require-live on $BROKER_SYMBOL with a restart
-#                (needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER; else skipped)
+#                (needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER; SKIP in the default run,
+#                FAIL rc 10 when named on the command line)
 #
 # Credentials come from the environment, or from the file $E2E_ENV (default
 # .env, never committed). Use the account's READ-ONLY (investor) password: the
@@ -165,7 +166,16 @@ s_e2e_goldrec() {
     scripts/goldrec-e2e.sh --broker-symbol EURUSD --min-ticks 1 --restart --timeout "$E2E_TIMEOUT" --out "$OUT/e2e-goldrec"
 }
 s_e2e_live() {
-  have MT5_LOGIN && have MT5_PASSWORD && have MT5_SERVER || { skip "MT5_LOGIN/MT5_PASSWORD/MT5_SERVER not set"; return; }
+  if ! { have MT5_LOGIN && have MT5_PASSWORD && have MT5_SERVER; }; then
+    # Named on the command line: refuse, never skip. Only the default all-steps run may skip.
+    if [ "$EXPLICIT" = 1 ]; then
+      mkdir -p "$OUT/e2e-live"
+      printf 'reason=env_missing\nrc=10\nstage=preflight\nelapsed=0\n' >"$OUT/e2e-live/result.txt"
+      echo "FAIL reason=env_missing: MT5_LOGIN/MT5_PASSWORD/MT5_SERVER not set (in $E2E_ENV or the environment)"
+      return 10
+    fi
+    skip "MT5_LOGIN/MT5_PASSWORD/MT5_SERVER not set"; return
+  fi
   # mt5-state/ keeps the terminal's servers.dat across sessions: after one
   # successful login (or with MT5_SERVERS_DAT = a desktop MT5's
   # <data folder>/config/servers.dat) the config login reaches the broker
@@ -191,6 +201,7 @@ s_e2e_live() {
 }
 
 ALL=(env check shell fuzz image probe-net probe-api e2e e2e-goldrec e2e-live)
+EXPLICIT=0; [ $# -gt 0 ] && EXPLICIT=1 # steps named on the command line never skip for missing credentials
 STEPS=("$@")
 [ ${#STEPS[@]} -gt 0 ] || STEPS=("${ALL[@]}")
 echo "gomql5 verification session $TS -> $OUT"
