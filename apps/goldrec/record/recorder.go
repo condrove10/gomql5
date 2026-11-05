@@ -752,6 +752,14 @@ func (r *Recorder) resync(ctx context.Context, term *mt5.Terminal, sym, reason s
 	} else {
 		kv = append(kv, "quote_error", err.Error())
 	}
+	// Broker clock in seconds, so an old quote_time_msc can be read against it.
+	pctx, pcancel := context.WithTimeout(ctx, healthCallTimeout)
+	if sec, err := term.Ping(pctx); err == nil {
+		kv = append(kv, "server_time", sec)
+	} else {
+		kv = append(kv, "ping_error", err.Error())
+	}
+	pcancel()
 	if err := term.SubscribeTicks(ctx, sym); err != nil {
 		kv = append(kv, "subscribe_error", err.Error())
 	}

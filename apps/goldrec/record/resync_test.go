@@ -161,6 +161,10 @@ func TestResyncWhenConnectedButQuiet(t *testing.T) {
 	if ev["quote_time_msc"] != float64(1762200000000) || ev["quote_broker_wallclock"] != "2025-11-03T20:00:00.000" {
 		t.Fatalf("quote not recorded: %v", ev)
 	}
+	// FakeEA's default ping answers 1700000000 (seconds): the broker clock for the market-closed rule.
+	if ev["server_time"] != float64(1700000000) {
+		t.Fatalf("server_time not recorded (seconds, from Ping): %v", ev)
+	}
 	if pr := readLines(t, filepath.Join(dir, "prices.jsonl")); len(pr) == 0 {
 		t.Fatal("ticks did not resume after the quiet resync")
 	}
