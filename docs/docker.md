@@ -7,7 +7,8 @@ No broker account was used.
 
 * **Install:** WineHQ **11.21 staging** on `debian:trixie-slim` installs MT5
   headless. `mt5setup.exe /auto` under Xvfb takes about 1 minute, giving
-  terminal build 6295/6296. The image is about 7.3 GB.
+  terminal build 6295/6296. The image was about 7.3 GB; see "Image size"
+  below for the cuts that bring it to about 4.4 GB.
   * Wine's Mono/Gecko prompt hangs `wineboot` under Xvfb (it fails after 300 s
     with `could not load kernel32.dll`). Setting
     `WINEDLLOVERRIDES="mscoree,mshtml="` during `wineboot` avoids it.
@@ -71,6 +72,29 @@ No broker account was used.
   programmatically".
 * The documented start-up config keys are `[Common]`, `[Experts]` and
   `[StartUp]` (see the terminal help, "Platform Start").
+
+## Image size (session 2026-11-05)
+
+`docker image inspect -f '{{.Size}}'`: **7,278,172,227 → 4,364,788,631 bytes**
+(7.28 → 4.36 GB). Per layer (`docker history`):
+
+| Cut | Layer before → after | Saved |
+| --- | --- | --- |
+| `wineboot` copies every builtin DLL into `system32` / `syswow64`, byte-identical to `/opt/wine-staging/lib/wine/{x86_64,i386}-windows`. `install-mt5.sh` replaces each copy that `cmp`s equal with a symlink (1,480 files), in the same RUN layer. `drive_c/windows`: 1.6 GB → 130 MB | install layer 2.2 GB → 511 MB | ~1.6 GB |
+| Delete `AppData/Roaming/MetaQuotes/WebInstall` (the web installer's cache) and temp files | (same layer) | ~109 MB |
+| `winehq-staging` with `--no-install-recommends`, plus the Recommends Wine needs here named explicitly (gnutls, freetype, fontconfig, dbus, the X11 extension libs; amd64 and the i386 ones for gnutls/fonts/X11). Drops GTK 3, Vulkan/VA drivers, CUPS, SDL, ODBC, GLU, poppler-data | apt layer 3.13 GB → 2.67 GB | ~460 MB |
+
+Kept on purpose: i386 Wine (dropping it is a separate, riskier step),
+`Bases/Default/History` (the no-account e2e reads its cached quote),
+ImageMagick/x11vnc/xdotool/Xvfb (tooling). What remains is mostly
+`wine-staging-{amd64,i386}` (1.7 GB) and their hard Depends (LLVM via
+Mesa, libavcodec, GStreamer).
+
+Verified on the slim image: `scripts/e2e.sh` PASS, `scripts/goldrec-e2e.sh
+--broker-symbol EURUSD --min-ticks 1 --restart` PASS, GoBridge compiles with
+0 errors, 0 warnings, and screenshots render fonts and charts normally.
+`E2E_IMAGE=<tag>` makes both scripts build/run another tag than
+`gomql5/mt5:local`.
 
 ## Community images seen in a 2026 search
 

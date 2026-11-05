@@ -209,9 +209,11 @@ E2E_CA_CERT=/root/.ccr/ca-bundle.crt BASE_IMAGE=mirror.gcr.io/library/debian:tri
 * `E2E_CA_CERT` passes the proxy CA as a build secret. When `HTTPS_PROXY` is
   set, `e2e.sh` also adds `--network host` and the proxy build args.
 * The mirror images avoid Docker Hub's 429 rate limit.
+* `E2E_IMAGE=gomql5/mt5:<tag>` builds/runs another tag with `scripts/e2e.sh`
+  and `scripts/goldrec-e2e.sh`, so a trial image doesn't replace `:local`.
 * A container on a compose bridge network can't reach the proxy, so
   `apt-get` inside it fails. That's why ImageMagick is baked into the image.
-* **Disk:** each image is ~7.3 GB, and repeated builds pile up build cache.
+* **Disk:** each image is ~4.4 GB (7.3 GB before the cuts in `docs/docker.md` "Image size"), and repeated builds pile up build cache.
   In session 2 the disk filled to 100 %. Check `df -h /` and prune with
   `docker builder prune -af` and `docker image prune -f`.
 * There's no broker account in the sandbox: the terminal runs against bundled

@@ -39,7 +39,14 @@ RUN --mount=type=secret,id=ca_cert,required=false \
     curl -fsSL -o /etc/apt/sources.list.d/winehq-trixie.sources \
       https://dl.winehq.org/wine-builds/debian/dists/trixie/winehq-trixie.sources; \
     apt-get update; \
-    apt-get install -y --install-recommends winehq-${WINE_BRANCH}; \
+    # No Recommends (they pull GTK, Vulkan/VA drivers, CUPS, SDL, ~0.5 GB):
+    # only the ones Wine needs here, for TLS, fonts and X11 (64- and 32-bit).
+    apt-get install -y --no-install-recommends winehq-${WINE_BRANCH} \
+      libgnutls30t64 libfreetype6 libfontconfig1 libdbus-1-3 \
+      libxcomposite1 libxcursor1 libxfixes3 libxi6 libxinerama1 libxrandr2 libxrender1 libxxf86vm1 \
+      libgnutls30t64:i386 libfreetype6:i386 libfontconfig1:i386 \
+      libxcomposite1:i386 libxcursor1:i386 libxfixes3:i386 libxi6:i386 libxinerama1:i386 \
+      libxrandr2:i386 libxrender1:i386 libxxf86vm1:i386; \
     rm -rf /var/lib/apt/lists/* /etc/apt/apt.conf.d/99build-ca /tmp/build-ca.crt; \
     wine --version
 

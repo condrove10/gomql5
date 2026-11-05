@@ -37,7 +37,7 @@
 # listed in the terminal's config/servers.dat (--servers-dat / --state).
 # --source api needs MYFXBOOK_EMAIL/MYFXBOOK_PASSWORD.
 #
-# Exit 0 = PASS. Requires gomql5/mt5:local (build with scripts/e2e.sh --build).
+# Exit 0 = PASS. Runs $E2E_IMAGE (default gomql5/mt5:local; build with scripts/e2e.sh --build).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -68,7 +68,7 @@ OUT="${OUT:-e2e-out/goldrec-$TS}"
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 DATA=$OUT/data
-IMAGE=gomql5/mt5:local NAME=gomql5-goldrec-$TS TOKEN=goldrec-e2e APP_PID=""
+IMAGE=${E2E_IMAGE:-gomql5/mt5:local} NAME=gomql5-goldrec-$TS TOKEN=goldrec-e2e APP_PID=""
 say() { echo "[goldrec-e2e] $*"; }
 now() { echo "$SECONDS"; } # the clock every wait reads
 lines() { [ -f "$1" ] && wc -l <"$1" || echo 0; }

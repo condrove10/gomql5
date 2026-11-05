@@ -38,3 +38,29 @@ wineserver -k || true
 rm -f /tmp/mt5setup.exe
 echo "MetaTrader 5 installed in $MT5_DIR"
 ls "$MT5_DIR"
+
+# --- slim the prefix (same RUN layer, so the space is really saved) ---------
+# Installer leftovers: the web installer's download cache and temp files.
+rm -rf "$WINEPREFIX/drive_c/users/root/AppData/Roaming/MetaQuotes/WebInstall" \
+  "$WINEPREFIX/drive_c/users/root/Temp/"* "$WINEPREFIX/drive_c/windows/temp/"* \
+  /tmp/.wine-* 2>/dev/null || true
+
+# wineboot copies every builtin DLL/EXE into system32 and syswow64 (~1.4 GB).
+# Those copies are byte-identical to Wine's own; replace each with a symlink.
+# A file that differs (or has no Wine counterpart) is left alone.
+dedup_dir() { # $1 = prefix dir, $2 = Wine's builtin dir
+  local dir=$1 src=$2 f base n=0
+  [ -d "$dir" ] && [ -d "$src" ] || return 0
+  while IFS= read -r -d '' f; do
+    base=$(basename "$f")
+    if [ -f "$src/$base" ] && cmp -s "$f" "$src/$base"; then
+      ln -sf "$src/$base" "$f"
+      n=$((n + 1))
+    fi
+  done < <(find "$dir" -type f -print0)
+  echo "dedup: $n files in $dir -> $src"
+}
+WINE_LIB=$(dirname "$(readlink -f "$(command -v wine)")")/../lib/wine
+dedup_dir "$WINEPREFIX/drive_c/windows/system32" "$WINE_LIB/x86_64-windows"
+dedup_dir "$WINEPREFIX/drive_c/windows/syswow64" "$WINE_LIB/i386-windows"
+du -sh "$WINEPREFIX/drive_c/windows" "$WINEPREFIX"
