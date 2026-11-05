@@ -149,6 +149,20 @@ bridge_connected() {
 # a desktop MT5 that has logged in once) and keep the terminal's own copy after
 # every start, so one successful login teaches all later starts.
 
+# mt5_config_dir MT5_DIR: the config folder the terminal actually uses. Wine
+# resolves names case-insensitively, but Linux keeps "Config" (created by the
+# installer) and "config" apart; when both exist the terminal used the
+# lowercase one (measured: it wrote terminal.ini/common.ini and a fresh
+# 7544-byte servers.dat there and ignored Config/servers.dat). So: an existing
+# "config" wins (older volumes have one), else "Config", else create "Config".
+# Never create a second folder.
+mt5_config_dir() {
+  local d=$1
+  if [ -d "$d/config" ]; then echo "$d/config"
+  elif [ -d "$d/Config" ]; then echo "$d/Config"
+  else mkdir -p "$d/Config" && echo "$d/Config"; fi
+}
+
 # servers_dat_install SRC DEST: copy SRC over DEST atomically; prints a log line.
 servers_dat_install() {
   local src=$1 dest=$2 tmp

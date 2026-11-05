@@ -3,7 +3,7 @@
 # Run: bash docker/mt5/test/servers_dat_test.sh
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
-fns=$(sed -n '/^servers_dat_install() {/,/^}/p; /^servers_dat_save() {/,/^}/p' "$here/../lib.sh")
+fns=$(sed -n '/^servers_dat_install() {/,/^}/p; /^servers_dat_save() {/,/^}/p; /^mt5_config_dir() {/,/^}/p' "$here/../lib.sh")
 [[ "$fns" == *"servers_dat_install()"* && "$fns" == *"servers_dat_save()"* ]] || { echo "FAIL: functions not found in lib.sh"; exit 1; }
 eval "$fns"
 fail=0
@@ -59,4 +59,14 @@ out=$(servers_dat_save "$T/missing.dat" "$T/state"); rc=$?
 same "save without a terminal copy: silent no-op" "0  learned list v2" "$rc $out $(cat "$T/state/servers.dat")"
 out=$(servers_dat_save "$dest" "$T/no-such-dir"); rc=$?
 same "save without a state dir: silent no-op" "0 " "$rc $out"
+
+# Which config folder the terminal uses (measured 2026-11-05: with both
+# "Config" and "config" present it read/wrote the lowercase one).
+M=$T/mt5a; mkdir -p "$M/Config"
+same "only Config: use it" "$M/Config" "$(mt5_config_dir "$M")"
+same "only Config: no second folder created" "Config" "$(ls "$M")"
+mkdir -p "$M/config"
+same "both: the lowercase one (what the terminal uses)" "$M/config" "$(mt5_config_dir "$M")"
+M=$T/mt5b; mkdir -p "$M"
+same "neither: create Config" "$M/Config Config" "$(mt5_config_dir "$M") $(ls "$M")"
 exit $fail

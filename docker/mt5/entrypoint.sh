@@ -59,7 +59,7 @@ if [ -n "${VNC_PASSWORD:-}" ]; then
 fi
 
 # 1. Install and compile the EA from the image (always matches the Go module).
-mkdir -p "$MT5_DIR/MQL5/Experts/GoBridge" "$MT5_DIR/MQL5/Include/GoBridge" "$MT5_DIR/MQL5/Presets" "$MT5_DIR/config"
+mkdir -p "$MT5_DIR/MQL5/Experts/GoBridge" "$MT5_DIR/MQL5/Include/GoBridge" "$MT5_DIR/MQL5/Presets"
 cp /opt/gobridge/mql5/Experts/GoBridge/*.mq5 "$MT5_DIR/MQL5/Experts/GoBridge/"
 cp /opt/gobridge/mql5/Include/GoBridge/*.mqh "$MT5_DIR/MQL5/Include/GoBridge/"
 EX5="$MT5_DIR/MQL5/Experts/GoBridge/GoBridge.ex5"
@@ -135,7 +135,8 @@ if [ "${GOBRIDGE_AUTO_ALLOW:-1}" = "1" ]; then
 fi
 
 # Trade-server list: an explicit file wins, else the state dir's saved copy.
-SERVERS_DAT="$MT5_DIR/Config/servers.dat"
+SERVERS_DAT="$(mt5_config_dir "$MT5_DIR")/servers.dat"
+log "terminal config folder: $(dirname "$SERVERS_DAT")"
 if [ -n "${MT5_SERVERS_DAT:-}" ]; then
   log "$(servers_dat_install "$MT5_SERVERS_DAT" "$SERVERS_DAT" 2>&1)"
 elif [ -n "${GOMQL5_STATE_DIR:-}" ] && [ -s "$GOMQL5_STATE_DIR/servers.dat" ]; then
