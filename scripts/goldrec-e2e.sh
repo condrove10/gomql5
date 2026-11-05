@@ -86,7 +86,7 @@ OUT=$(cd "$OUT" && pwd)
 rm -f "$OUT/result.txt" # a reused --out must not report the previous run's result
 for d in data state; do [ ! -e "$OUT/$d" ] || mv "$OUT/$d" "$OUT/$d.old-$TS"; done # and must not count its data or route
 DATA=$OUT/data
-IMAGE=${E2E_IMAGE:-gomql5/mt5:local} NAME=gomql5-goldrec-$TS TOKEN=goldrec-e2e APP_PID=""
+IMAGE=${E2E_IMAGE:-gomql5/mt5:local} NAME=gomql5-goldrec-$TS TOKEN=goldrec-e2e APP_PID="" FOLLOW_PID=""
 say() { echo "[goldrec-e2e] $*"; }
 now() { echo "$SECONDS"; } # the clock every wait reads
 lines() { [ -f "$1" ] && wc -l <"$1" || echo 0; }
@@ -161,6 +161,7 @@ cleanup() {
   fi
   collect
   [ -n "$APP_PID" ] && kill -INT "$APP_PID" 2>/dev/null && wait "$APP_PID" 2>/dev/null || true
+  [ -z "$FOLLOW_PID" ] || kill "$FOLLOW_PID" 2>/dev/null || true # the follower of the container's log
   if [ $KEEP = 1 ]; then say "--keep: terminal left running as $NAME (state not promoted: its save is not final)"; return 0; fi
   docker stop -t 30 "$NAME" >/dev/null 2>&1 || true
   if [ $LIVE = 1 ] && [ -n "$STATE_DIR" ] && [ "$(head -1 "$OUT/result.txt" 2>/dev/null)" = reason=ok ]; then
@@ -289,6 +290,10 @@ start_terminal() {
   STAGE=$RUN_LABEL
   docker run -d --rm --name "$NAME" --network host --shm-size 512m "${acct[@]}" \
     -e GOBRIDGE_TOKEN=$TOKEN -e GOBRIDGE_HOST=127.0.0.1 -e GOBRIDGE_PORT="$PORT" "$IMAGE" >/dev/null
+  # --rm removes the container once the entrypoint exits, so keep its log as it is written.
+  : >"$OUT/container-follow.log" # a reused --out: the previous run's lines do not count
+  docker logs -f "$NAME" >>"$OUT/container-follow.log" 2>&1 &
+  FOLLOW_PID=$!
   mark_started
 }
 # fatal: print "REASON RC why" (see live_fail_why) when the run cannot pass any
@@ -307,8 +312,8 @@ fatal() {
 terminal_fatal() {
   local line
   if ! kill -0 "$APP_PID" 2>/dev/null; then echo "recorder_died 30 goldrec exited:"; tail -20 "$OUT/goldrec.log"; return 0; fi
-  if docker logs "$NAME" 2>&1 | grep -qE 'compilation failed|cannot resolve'; then
-    line=$(docker logs "$NAME" 2>&1 | grep -E 'compilation failed|cannot resolve' | head -1)
+  if grep -qE 'compilation failed|cannot resolve' "$OUT/container-follow.log"; then
+    line=$(grep -E 'compilation failed|cannot resolve' "$OUT/container-follow.log" | head -1)
     case $line in
       *'compilation failed'*) echo "compile_failed 20 container: $line" ;;
       *) echo "ea_timeout 21 container: $line" ;; # the EA can never reach GOBRIDGE_HOST

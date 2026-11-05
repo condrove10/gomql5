@@ -479,7 +479,9 @@ case $1 in
       echo '{"source":"replay"}' >>"$d/sentiment.jsonl"
     fi
     ;;
-  logs) [ -z "${STUB_LOGS:-}" ] || echo "$STUB_LOGS" ;;
+  logs) # STUB_GONE: the container has exited and --rm removed it, so a plain logs finds nothing; a follower (-f) keeps what it saw
+    if [ "${2:-}" != -f ] && [ "${STUB_GONE:-0}" = 1 ]; then exit 1; fi
+    [ -z "${STUB_LOGS:-}" ] || echo "$STUB_LOGS" ;;
   inspect) [ -f "$STUB_OUT/running" ] || exit 1; echo true ;; # mt5ctl's gate; also `gone`
   exec) # mt5ctl exec: the window title; every other look inside finds nothing
     case $* in
@@ -590,6 +592,12 @@ has "symbol unavailable: reason printed" "$out" "FAIL reason=symbol_missing: bro
 out=$(STUB_FEED=none STUB_LOGS='[gomql5-mt5] compilation failed (no GoBridge.ex5)' whole)
 reason "compile fails" "$out" compile_failed 20 start
 has "compile fails: the compile line" "$out" "compilation failed (no GoBridge.ex5)"
+
+# The entrypoint exits right after the compile line and --rm removes the container
+# before the next poll: the reason must still come from what the follower logged.
+out=$(STUB_FEED=none STUB_GONE=1 STUB_LOGS='[gomql5-mt5] compilation failed (no GoBridge.ex5)' whole)
+reason "compile fails, container already removed" "$out" compile_failed 20 start
+has "compile fails, removed: the compile line" "$out" "compilation failed (no GoBridge.ex5)"
 
 out=$(STUB_FEED=none STUB_LOGS='[gomql5-mt5] cannot resolve host.example' whole)
 reason "bridge host unresolvable" "$out" ea_timeout 21 start
