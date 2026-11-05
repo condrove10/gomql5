@@ -149,10 +149,12 @@ collect() {
     scripts/mt5ctl.sh -c "$NAME" -o "$OUT" logs compile >"$OUT/compile.log" 2>&1 || true
   fi
 }
+norm=0 # the exit status the script ends with: cleanup sets it
 cleanup() {
   rc=$? # first: set -e can end the script anywhere (go build, docker run)
+  norm=$rc; [ "$rc" != 77 ] || norm=1 # 77 is session.sh's SKIP: never a failure's rc
   if [ ! -f "$OUT/result.txt" ]; then
-    write_result unclassified "$rc"
+    write_result unclassified "$norm"
     say "FAIL reason=unclassified: exit $rc outside live_fail (see the output above)"
   fi
   collect
@@ -163,7 +165,7 @@ cleanup() {
     promote_state
   fi
 }
-trap cleanup EXIT
+trap 'cleanup; exit "$norm"' EXIT
 
 # image_id: the image's ID, short; fails when there is no such image.
 image_id() { docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null | sed 's/^sha256://' | cut -c1-12; }

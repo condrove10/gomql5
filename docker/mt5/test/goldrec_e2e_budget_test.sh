@@ -554,6 +554,10 @@ out=$(STUB_GO_RC=7 whole)
 reason "go build fails (set -e)" "$out" unclassified 7 preflight
 has "go build fails: no container" "$out" "docker_runs=0"
 
+# rc 77 (EX_NOPERM) from an unguarded command: session.sh would call it SKIP, so it fails as 1.
+out=$(STUB_GO_RC=77 whole)
+reason "go build exits 77 (set -e): not SKIP" "$out" unclassified 1 preflight
+
 out=$(STUB_RUN_RC=125 whole)
 reason "docker run fails (set -e)" "$out" unclassified 125 start
 
