@@ -415,9 +415,22 @@ make help
    ```
 
    For a broker whose server the stock terminal doesn't know (FTMO, for
-   example), `FIND_BROKER` searches MetaQuotes' broker directory through
-   *File → Open an Account* when the login doesn't connect, and screenshots
-   the result. It never opens an account.
+   example), the configured login falls back to MetaQuotes-Demo. With
+   `FIND_BROKER`, the run then logs in through *File → Open an Account*:
+   1. It searches the broker, clicks Next, and fills in the
+      existing-account form.
+   2. It selects `MT5_SERVER` in the server list **by name**. The helper
+      `docker/mt5/tools/wincombo.c` does this with standard Win32 combo-box
+      messages, the interface accessibility tools use. It reads no process
+      memory.
+   3. If the helper can't run, it falls back to trying list entries in
+      order.
+
+   It never opens an account.
+
+   The live check uses `BTCUSD` by default (`BROKER_SYMBOL`). Crypto trades
+   24/7, so the check can't land on a closed market. Pass
+   `BROKER_SYMBOL=XAUUSD` for gold during its trading hours.
 
 3. Send back `session-out/<timestamp>.tar.gz`, or just `session.log`.
 

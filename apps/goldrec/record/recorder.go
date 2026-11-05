@@ -59,11 +59,11 @@ type Config struct {
 	StatusEvery time.Duration // default 5s
 
 	// HealthEvery is how often a connected terminal is checked
-	// (TerminalInfo, tick silence). Default 10s.
+	// (TerminalInfo, tick silence). Default 5s.
 	HealthEvery time.Duration
 	// ResyncQuiet: while the terminal is connected to a trade server and no
 	// tick has arrived for this long, re-select and re-subscribe the symbol
-	// (and record why). Default 60s.
+	// (and record why). Default 10s.
 	ResyncQuiet time.Duration
 }
 
@@ -145,10 +145,10 @@ func New(cfg Config) (*Recorder, error) {
 		cfg.StatusEvery = 5 * time.Second
 	}
 	if cfg.HealthEvery <= 0 {
-		cfg.HealthEvery = 10 * time.Second
+		cfg.HealthEvery = 5 * time.Second
 	}
 	if cfg.ResyncQuiet <= 0 {
-		cfg.ResyncQuiet = 60 * time.Second
+		cfg.ResyncQuiet = 10 * time.Second
 	}
 	var b [8]byte
 	rand.Read(b[:])
@@ -497,7 +497,7 @@ func (r *Recorder) serveTerminal(ctx context.Context, term *mt5.Terminal) error 
 	defer cancel()
 	sym := r.cfg.BrokerSymbol
 	if err := term.SymbolSelect(cctx, sym, true); err != nil {
-		cands, _ := term.SymbolsGet(cctx, "*XAU*,*GOLD*", false)
+		cands, _ := term.SymbolsGet(cctx, candidatesPattern(sym), false)
 		r.event("quality", "what", "broker_symbol_unavailable", "broker_symbol", sym, "error", err.Error(), "candidates", cands)
 		r.cfg.Log.Error("broker symbol unavailable; set -broker-symbol", "symbol", sym, "err", err, "candidates", cands)
 		r.setErr(fmt.Errorf("broker symbol %q: %v", sym, err))
@@ -606,7 +606,7 @@ func (r *Recorder) resync(ctx context.Context, term *mt5.Terminal, sym, reason s
 	kv := []any{"reason", reason, "broker_symbol", sym, "login", term.Hello().Login}
 	if err := term.SymbolSelect(ctx, sym, true); err != nil {
 		kv = append(kv, "select_error", err.Error())
-		cands, _ := term.SymbolsGet(ctx, "*XAU*,*GOLD*", false)
+		cands, _ := term.SymbolsGet(ctx, candidatesPattern(sym), false)
 		kv = append(kv, "candidates", cands)
 	}
 	if si, err := term.SymbolInfo(ctx, sym); err == nil {
@@ -677,4 +677,15 @@ func defaultPriceInstrument(brokerSymbol string) string {
 		return "XAUUSD"
 	}
 	return brokerSymbol
+}
+
+// candidatesPattern is the SymbolsGet group listing likely broker names for
+// sym when it is missing: gold's usual aliases, else anything containing the
+// first three letters (BTCUSD → "*BTC*", so "BTCUSD.r" or "BTCUSDm" show up).
+func candidatesPattern(sym string) string {
+	u := strings.ToUpper(sym)
+	if strings.HasPrefix(u, "XAU") || strings.HasPrefix(u, "GOLD") || len(u) < 3 {
+		return "*XAU*,*GOLD*"
+	}
+	return "*" + u[:3] + "*"
 }

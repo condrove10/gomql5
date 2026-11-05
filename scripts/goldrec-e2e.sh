@@ -158,6 +158,31 @@ ensure_live() {
   [ -n "${MT5_LOGIN:-}" ] && [ -n "${MT5_PASSWORD:-}" ] || { say "FAIL: --require-live needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER"; exit 1; }
   deadline=$((SECONDS + CONNECT_TIMEOUT))
   while [ $SECONDS -lt $deadline ] && ! trade_connected; do show_network; sleep 5; done
+  # First choice: select MT5_SERVER by name in the wizard's server list
+  # (window messages, docker/mt5/tools/wincombo.c). Positions are only the
+  # fallback when that helper can't run (e.g. an older image).
+  if ! trade_connected && [ -n "$FIND_BROKER" ] && [ -n "${MT5_SERVER:-}" ] && [ "$LOGIN_START" = 0 ]; then
+    local rc=0
+    before=$(journal | failed_auth_count)
+    say "not connected to a trade server: logging in via File > Open an Account ('$FIND_BROKER', server '$MT5_SERVER' selected by name)"
+    scripts/mt5ctl.sh -c "$NAME" -o "$OUT" login-broker "$FIND_BROKER" name >/dev/null || rc=$?
+    say "      evidence: login-name-servers.txt, login-name-servers.png, login-name-form.png"
+    if [ $rc = 3 ]; then
+      say "FAIL: '$MT5_SERVER' is not in $FIND_BROKER's server list: $(grep -E '^\s+\[' "$OUT/login-name-servers.txt" 2>/dev/null | sed -E 's/^\s+\[[0-9]+\] //' | paste -sd, -)"; exit 1
+    elif [ $rc != 0 ]; then
+      say "      selection by name failed (exit $rc); falling back to list positions"
+    else
+      deadline=$((SECONDS + LOGIN_WAIT))
+      while [ $SECONDS -lt $deadline ] && ! trade_connected; do
+        show_network
+        [ "$(journal | failed_auth_count)" -gt "$before" ] && break
+        sleep 3
+      done
+      if ! trade_connected && [ "$(journal | last_failed_server)" = "$MT5_SERVER" ]; then
+        say "FAIL: $MT5_SERVER itself rejected account $MT5_LOGIN (Invalid account): check MT5_LOGIN/MT5_PASSWORD"; exit 1
+      fi
+    fi
+  fi
   if ! trade_connected && [ -n "$FIND_BROKER" ]; then
     for ((idx = LOGIN_START; idx < LOGIN_START + LOGIN_TRIES; idx++)); do
       before=$(journal | failed_auth_count)

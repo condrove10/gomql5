@@ -19,7 +19,8 @@
 #                             wait WAIT s (default 30), screenshot the result, close the wizard
 #   login-broker NAME [INDEX] log in with the container's MT5_LOGIN/MT5_PASSWORD through
 #                             File > Open an Account: search NAME ("" = first listed company),
-#                             Next, existing account, server-list entry INDEX (default 0), Finish.
+#                             Next, existing account, server-list entry INDEX (default 0; "name" =
+#                             MT5_SERVER selected by name via window messages, exit 3 if absent), Finish.
 #                             Screenshots: login-INDEX-servers.png, login-INDEX-form.png
 #
 # UI-driving commands (goto, dismiss, click, key, type) hold the container's UI
@@ -120,11 +121,13 @@ case "$cmd" in
     idx="${2:-0}"
     # MT5_LOGIN/MT5_PASSWORD are read from the container's own environment, so
     # they never appear on this command line.
-    docker exec "$C" bash -c 'source /usr/local/lib/gomql5/lib.sh; ui_lock 180 && ui_login_existing "$1" "$2"' _ "$1" "$idx"
-    rc=$?
+    # (|| rc=: under set -e a failing exec would exit before the evidence is copied.)
+    rc=0
+    docker exec "$C" bash -c 'source /usr/local/lib/gomql5/lib.sh; ui_lock 180 && ui_login_existing "$1" "$2"' _ "$1" "$idx" || rc=$?
     mkdir -p "$OUT"
     docker cp -q "$C:/tmp/mt5ctl-servers.png" "$OUT/login-$idx-servers.png" 2>/dev/null || true
     docker cp -q "$C:/tmp/mt5ctl-login.png" "$OUT/login-$idx-form.png" 2>/dev/null || true
+    [ "$idx" = name ] && { docker cp -q "$C:/tmp/mt5ctl-servers.txt" "$OUT/login-name-servers.txt" 2>/dev/null || true; }
     echo "$OUT/login-$idx-servers.png $OUT/login-$idx-form.png"
     exit $rc
     ;;

@@ -165,3 +165,12 @@ func TestResyncWhenConnectedButQuiet(t *testing.T) {
 		t.Fatal("ticks did not resume after the quiet resync")
 	}
 }
+
+func TestCandidatesPattern(t *testing.T) {
+	for sym, want := range map[string]string{"XAUUSD": "*XAU*,*GOLD*", "gold.m": "*XAU*,*GOLD*", "BTCUSD": "*BTC*",
+		"btcusd.r": "*BTC*", "EURUSD": "*EUR*", "X": "*XAU*,*GOLD*"} {
+		if got := candidatesPattern(sym); got != want {
+			t.Errorf("%s: %q, want %q", sym, got, want)
+		}
+	}
+}
