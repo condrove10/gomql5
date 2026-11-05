@@ -446,6 +446,8 @@ case $1 in
     fi
     echo run >>"$STUB_OUT/docker-runs"
     [ "${STUB_RUN_RC:-0}" = 0 ] || exit "$STUB_RUN_RC"
+    # In the recorder's log before the script goes on, unlike STUB_RECORDER_LOG.
+    [ -z "${STUB_RUN_LOG:-}" ] || echo "$STUB_RUN_LOG" >>"$STUB_OUT/goldrec.log"
     touch "$STUB_OUT/running"
     feed=${STUB_FEED:-full}
     if [ "$feed" = once ]; then
@@ -458,7 +460,10 @@ case $1 in
       echo "{\"kind\":\"account\",\"company\":\"FTMO S.R.O.\",\"conn\":$conn,\"login\":12345678,\"server\":\"FTMO-Demo\",\"trade_allowed\":true}"
       echo "{\"kind\":\"terminal_info\",\"build\":6300,\"conn\":$conn,\"trade_server_connected\":true}"
     } >>"$d/events.jsonl"
-    [ "$feed" = no-ticks ] || echo '{"bid":1,"trade_server_connected":true}' >>"$d/prices.jsonl"
+    if [ "$feed" = symbol-refused ]; then
+      echo "{\"broker_symbol\":\"XAUUSD\",\"candidates\":[\"XAUUSD.r\"],\"conn\":$conn,\"error\":\"mt5 error -4: unknown symbol\",\"kind\":\"quality\",\"what\":\"broker_symbol_unavailable\"}" >>"$d/events.jsonl"
+    fi
+    [ "$feed" = no-ticks ] || [ "$feed" = symbol-refused ] || echo '{"bid":1,"trade_server_connected":true}' >>"$d/prices.jsonl"
     if [ "$feed" != no-obs ] && [ "$feed" != no-ticks ]; then
       echo '{"source":"replay"}' >>"$d/sentiment.jsonl"
       echo '{"source":"replay"}' >>"$d/sentiment.jsonl"
@@ -503,7 +508,16 @@ fi
 # script's `kill -INT` + `wait` would block until this sleep ends.
 exec env --default-signal=INT "$REAL_SLEEP" 120
 EOF
-printf '#!/bin/bash\nexec "$REAL_SLEEP" 0.02\n' >"$T/bin/sleep" # POLL and the flush nap, no real waiting
+cat >"$T/bin/sleep" <<'EOF'
+#!/bin/bash
+# POLL and the flush nap, no real waiting. STUB_LATE_OBS: the positioning data comes
+# in the first nap, so a wait has to survive one fatal check to see it.
+if [ -n "${STUB_LATE_OBS:-}" ]; then
+  echo '{"source":"replay"}' >>"$STUB_OUT/data/sentiment.jsonl"
+  echo '{"source":"replay"}' >>"$STUB_OUT/data/sentiment.jsonl"
+fi
+exec "$REAL_SLEEP" 0.02
+EOF
 chmod +x "$T/bin/docker" "$T/bin/go" "$T/bin/sleep" "$T/recorder"
 whole() {
   local o="$T/whole.$RANDOM"; mkdir -p "$o/data"
@@ -612,6 +626,22 @@ reason "no fresh tick" "$out" no_fresh_ticks 28 start
 out=$(STUB_CHECK=stale-restart live --restart --live-budget 1)
 reason "a stale restart" "$out" stale_ticks 29 restart
 hasnt "no LIVE PASS on a stale restart" "$out" "LIVE PASS"
+
+# The recorder's refused-symbol line, with the real fatal: in a live run it ends nothing,
+# neither the waits after ensure_live nor ensure_live itself; only the budget, after
+# identity, makes it symbol_missing. Without --require-live it still fails fast.
+refused='broker symbol unavailable; set -broker-symbol'
+out=$(STUB_FEED=no-obs STUB_RUN_LOG="$refused" STUB_LATE_OBS=1 live)
+reason "symbol refused, then selected: the wait after identity goes on" "$out" ok 0 start
+has "symbol refused, then selected: LIVE PASS" "$out" "LIVE PASS: server=FTMO-Demo"
+hasnt "symbol refused, then selected: never the symbol" "$out" "symbol_missing"
+out=$(STUB_FEED=symbol-refused STUB_RUN_LOG="$refused" STUB_CHECK=pending-ticks live --live-budget 1)
+reason "symbol refused to the end: at the budget" "$out" symbol_missing 27 start
+has "symbol refused to the end: the budget's message" "$out" "FAIL reason=symbol_missing: no live XAUUSD tick within the 1s live budget"
+has "symbol refused to the end: names the candidates" "$out" "candidates: XAUUSD.r"
+out=$(STUB_FEED=no-obs STUB_RUN_LOG="$refused" STUB_LATE_OBS=1 whole)
+reason "symbol refused, without --require-live: still fails fast" "$out" symbol_missing 27 start
+has "symbol refused, without --require-live: quotes the line" "$out" "FAIL reason=symbol_missing: broker symbol XAUUSD unavailable: $refused"
 
 # session.sh reports 77 as SKIP, so no failure may use it.
 if grep -nE 'live_fail(_why)? .*\b77\b' "$script"; then echo "FAIL rc 77 used in $script"; fail=1; else echo "ok   rc 77 is not used"; fi

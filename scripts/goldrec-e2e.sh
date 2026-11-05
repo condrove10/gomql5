@@ -269,17 +269,18 @@ start_terminal() {
   mark_started
 }
 # fatal: print "REASON RC why" (see live_fail_why) when the run cannot pass any
-# more and return 0, else return 1.
+# more and return 0, else return 1. A refused symbol is fatal without --require-live
+# only: the recorder keeps retrying and the line stays in its log, so a live run
+# judges the symbol after identity, at the budget (ensure_live), and never from here.
 fatal() {
   if terminal_fatal; then return 0; fi
-  if grep -q 'broker symbol unavailable' "$OUT/goldrec.log"; then
+  if [ "$LIVE" != 1 ] && grep -q 'broker symbol unavailable' "$OUT/goldrec.log"; then
     echo "symbol_missing 27 broker symbol $SYM unavailable: $(grep -m1 'broker symbol unavailable' "$OUT/goldrec.log")"; return 0
   fi
   return 1
 }
 # terminal_fatal: fatal's part that no identity can change: the recorder or the
-# terminal's start. ensure_live reads only this: a refused symbol says nothing until
-# the identity holds, and is then judged at the budget.
+# terminal's start.
 terminal_fatal() {
   local line
   if ! kill -0 "$APP_PID" 2>/dev/null; then echo "recorder_died 30 goldrec exited:"; tail -20 "$OUT/goldrec.log"; return 0; fi
