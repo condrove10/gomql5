@@ -40,6 +40,11 @@ cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 
 E2E_ENV="${E2E_ENV:-.env}"
+# C13: lint before sourcing, so no unsafe line in the file ever runs (rc 11)
+if ! bash "$ROOT/scripts/envlint.sh" "$E2E_ENV"; then
+  echo "FAIL reason=env_unsafe: $E2E_ENV has a line the shell would run (key above); nothing ran" >&2
+  exit 11
+fi
 if [ -f "$E2E_ENV" ]; then
   set -a
   # shellcheck disable=SC1090

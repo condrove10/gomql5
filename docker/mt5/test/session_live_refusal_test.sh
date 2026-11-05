@@ -13,7 +13,7 @@ T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/scripts" "$T/bin"
 cp "$root/Makefile" "$T/"
-cp "$root/scripts/session.sh" "$root/scripts/gotmpdir.sh" "$T/scripts/"
+cp "$root/scripts/session.sh" "$root/scripts/gotmpdir.sh" "$root/scripts/envlint.sh" "$T/scripts/"
 printf '#!/bin/sh\nexit 0\n' >"$T/bin/docker" && chmod +x "$T/bin/docker"
 typo="$T/typo.env" # does not exist: the step must refuse, not skip
 

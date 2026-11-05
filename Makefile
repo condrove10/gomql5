@@ -44,7 +44,7 @@ session: ## ALL steps: env, check, shell, fuzz, image, probes, e2e, e2e-goldrec,
 	$(SESSION)
 
 session-live: ## the steps that matter for a live account: env, image, probes, e2e-live
-	@source "$${E2E_ENV:-.env}" 2>/dev/null; [ -n "$$MT5_LOGIN" ] || { echo "MT5_LOGIN not set (in .env or the environment)"; exit 2; }
+	@bash scripts/envlint.sh "$${E2E_ENV:-.env}" || exit 11; source "$${E2E_ENV:-.env}" 2>/dev/null; [ -n "$$MT5_LOGIN" ] || { echo "MT5_LOGIN not set (in .env or the environment)"; exit 2; }
 	$(SESSION) env image probe-net probe-api e2e-live
 
 ## --- individual steps (each also writes a session log) ------------------------
