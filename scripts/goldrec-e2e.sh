@@ -26,9 +26,11 @@
 #   --servers-dat FILE  install FILE as the terminal's config/servers.dat (a desktop MT5's
 #                       copy that knows the broker): a config login to a named server
 #                       (MT5_SERVER=FTMO-Demo) then works without any UI
-#   --state DIR         keep the terminal's servers.dat in DIR (installed from it at start
-#                       when present, saved back while running and at stop): after one
-#                       successful login, later runs log in from the config alone
+#   --state DIR         the terminal's servers.dat, kept in DIR. A run starts from DIR's copy
+#                       only when servers.dat.verified names this server and that file's
+#                       sha256. A --require-live PASS copies the run's copy back to DIR once
+#                       the terminal has stopped and writes that marker, so later runs log in
+#                       from the config alone. A failed run never writes to DIR
 #   --keep              leave the terminal running
 #   --out DIR           evidence directory (default e2e-out/goldrec-<timestamp>)
 #
@@ -151,7 +153,11 @@ cleanup() {
   fi
   collect
   [ -n "$APP_PID" ] && kill -INT "$APP_PID" 2>/dev/null && wait "$APP_PID" 2>/dev/null || true
-  if [ $KEEP = 1 ]; then say "--keep: terminal left running as $NAME"; else docker stop -t 30 "$NAME" >/dev/null 2>&1 || true; fi
+  if [ $KEEP = 1 ]; then say "--keep: terminal left running as $NAME (state not promoted: its save is not final)"; return 0; fi
+  docker stop -t 30 "$NAME" >/dev/null 2>&1 || true
+  if [ $LIVE = 1 ] && [ -n "$STATE_DIR" ] && [ "$(head -1 "$OUT/result.txt" 2>/dev/null)" = reason=ok ]; then
+    promote_state
+  fi
 }
 trap cleanup EXIT
 
@@ -161,14 +167,44 @@ image_id() { docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null | sed 's/^sh
 # files $2 and $3. Contents and relative names only: mtimes mean nothing in a zip
 # extraction.
 CONTENT_HASH='{ (cd "$1" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do sha256sum "$f"; done); sha256sum <"$2"; sha256sum <"$3"; } | sha256sum | cut -d" " -f1'
-# check_state_route: a name with no explicit --servers-dat needs the --state copy,
-# and that copy counts only with a marker for this server and these very bytes: a
-# failed run also leaves a servers.dat behind.
-check_state_route() {
+# state_verified SERVER: the --state servers.dat exists and is the one a PASS verified
+# for SERVER: the marker holds exactly that server and that file's sha256.
+state_verified() {
   local dat=$STATE_DIR/servers.dat
-  [ -n "$STATE_DIR" ] && [ -s "$dat" ] || live_fail no_route 13 "MT5_SERVER is a name and no servers.dat lists it: $SERVERS_DAT_HINT"
-  [ "$(cat "$dat.verified" 2>/dev/null)" = "server=$EXPECT_SERVER"$'\n'"sha256=$(sha256sum <"$dat" | cut -d' ' -f1)" ] ||
+  [ -n "$STATE_DIR" ] && [ -s "$dat" ] || return 1
+  [ "$(cat "$dat.verified" 2>/dev/null)" = "server=$1"$'\n'"sha256=$(sha256sum <"$dat" | cut -d' ' -f1)" ]
+}
+# check_state_route: a name with no explicit --servers-dat needs the --state copy,
+# and that copy counts only when state_verified says so: a failed run never writes
+# to --state, but an older file or a hand-made one must not pass as verified.
+check_state_route() {
+  [ -n "$STATE_DIR" ] && [ -s "$STATE_DIR/servers.dat" ] || live_fail no_route 13 "MT5_SERVER is a name and no servers.dat lists it: $SERVERS_DAT_HINT"
+  state_verified "$EXPECT_SERVER" ||
     live_fail route_unverified 14 "the --state servers.dat has no servers.dat.verified marker for this server and this file: pass the file with --servers-dat (MT5_SERVERS_DAT), or get one PASS"
+}
+# seed_state: the run's own copy of the --state servers.dat (OUT/state, mounted as the
+# terminal's GOMQL5_STATE_DIR) starts as the verified file or not at all.
+seed_state() {
+  local want=${EXPECT_SERVER:-${MT5_SERVER:-}} # EXPECT_SERVER is set by --require-live only
+  mkdir -p "$OUT/state"
+  if state_verified "$want"; then
+    cp "$STATE_DIR/servers.dat" "$OUT/state/servers.dat"
+    say "state: seeded from the verified $STATE_DIR/servers.dat"
+  else
+    say "state: no verified servers.dat in $STATE_DIR: the terminal starts without a saved route"
+  fi
+}
+# promote_state: after a LIVE PASS and the terminal's stop (its final save is in
+# OUT/state by then): the run's servers.dat becomes the --state copy, and the marker
+# names EXPECT_SERVER and that file's hash. The marker goes first, so a crash leaves
+# the state unverified rather than wrong.
+promote_state() {
+  if [ ! -s "$OUT/state/servers.dat" ]; then say "state: the terminal saved no servers.dat; $STATE_DIR not changed"; return 0; fi
+  mkdir -p "$STATE_DIR"
+  rm -f "$STATE_DIR/servers.dat.verified"
+  cp "$OUT/state/servers.dat" "$STATE_DIR/servers.dat.gomql5-tmp" && mv -f "$STATE_DIR/servers.dat.gomql5-tmp" "$STATE_DIR/servers.dat"
+  printf 'server=%s\nsha256=%s\n' "$EXPECT_SERVER" "$(sha256sum <"$STATE_DIR/servers.dat" | cut -d' ' -f1)" >"$STATE_DIR/servers.dat.verified"
+  say "state: promoted to $STATE_DIR/servers.dat, verified for $EXPECT_SERVER (sha256 $(sha256sum <"$STATE_DIR/servers.dat" | cut -c1-12))"
 }
 # preflight_live: everything a --require-live run needs that can be checked before
 # the terminal starts, cheapest first. Messages name variables, never values. Sets
@@ -221,9 +257,8 @@ start_terminal() {
     [ -s "$SERVERS_DAT" ] || live_fail no_route 13 "--servers-dat $SERVERS_DAT missing or empty: $SERVERS_DAT_HINT"
     acct+=(-v "$(cd "$(dirname "$SERVERS_DAT")" && pwd)/$(basename "$SERVERS_DAT"):/gomql5/servers.dat:ro" -e MT5_SERVERS_DAT=/gomql5/servers.dat)
   fi
-  if [ -n "$STATE_DIR" ]; then
-    mkdir -p "$STATE_DIR"
-    acct+=(-v "$(cd "$STATE_DIR" && pwd):/gomql5-state" -e GOMQL5_STATE_DIR=/gomql5-state)
+  if [ -n "$STATE_DIR" ]; then # the run's own copy: a failed run never reaches STATE_DIR
+    acct+=(-v "$OUT/state:/gomql5-state" -e GOMQL5_STATE_DIR=/gomql5-state)
   fi
   STAGE=$RUN_LABEL
   docker run -d --rm --name "$NAME" --network host --shm-size 512m "${acct[@]}" \
@@ -366,6 +401,7 @@ live_pass() {
 
 say "goldrec on 127.0.0.1:$PORT (source=$SOURCE, broker symbol $SYM); terminal $NAME"
 : >"$OUT/timings.txt"
+if [ -n "$STATE_DIR" ]; then seed_state; fi
 start_terminal
 if [ $LIVE = 1 ]; then
   ensure_live 1 0 "$MIN_TICKS"
