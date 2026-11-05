@@ -97,6 +97,17 @@ step() { # NAME CMD...
 }
 skip() { echo "SKIP: $*"; return 77; }
 have() { [ -n "${!1:-}" ]; }
+# servers_state_status DIR: describes DIR/servers.dat. It is verified only when
+# DIR/servers.dat.verified (written on PASS, C11) holds a sha256= that matches
+# the file, so a file a failed run left behind is never called verified.
+servers_state_status() {
+  local f="$1/servers.dat" m="$1/servers.dat.verified" want got
+  if [ ! -s "$f" ]; then echo "is empty"; return; fi
+  want=$(sed -n 's/^sha256=//p' "$m" 2>/dev/null)
+  got=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
+  if [ -n "$want" ] && [ "$want" = "$got" ]; then echo "has a saved servers.dat, verified"
+  else echo "has a saved servers.dat, unverified"; fi
+}
 
 s_env() {
   echo "date (UTC): $(date -u)"
@@ -188,7 +199,7 @@ s_e2e_live() {
   local args=(--require-live --broker-symbol "$BROKER_SYMBOL" --min-ticks 5 --restart --timeout "$E2E_TIMEOUT"
     --live-budget "${LIVE_BUDGET:-120}" --source "$POSITIONING_SOURCE" --out "$OUT/e2e-live" --state "$ROOT/mt5-state")
   [ -n "${MT5_SERVERS_DAT:-}" ] && args+=(--servers-dat "$MT5_SERVERS_DAT")
-  echo "-- servers.dat: ${MT5_SERVERS_DAT:-not given}; state dir mt5-state/ $( [ -s "$ROOT/mt5-state/servers.dat" ] && echo "has a saved servers.dat" || echo "is empty")"
+  echo "-- servers.dat: ${MT5_SERVERS_DAT:-not given}; state dir mt5-state/ $(servers_state_status "$ROOT/mt5-state")"
   scripts/goldrec-e2e.sh "${args[@]}"
   local rc=$?
   echo "-- live-login timings (seconds since the container started; budget ${LIVE_BUDGET:-120}s to the first live tick):"
@@ -253,5 +264,5 @@ rc=0; [ $fails = 0 ] || rc=1
 # archive holds the whole log.
 exec 1>&- 2>&-
 wait "$LOGGER_PID" 2>/dev/null || true # bash >= 5.1 waits for the process substitution
-tar -C "$ROOT/session-out" --exclude="$TS/*/goldrec" --exclude="$TS/*/basic" -czf "$OUT.tar.gz" "$TS" 2>/dev/null
+tar -C "$ROOT/session-out" --exclude="$TS/*/goldrec" --exclude="$TS/*/basic" --exclude="$TS/*/state" -czf "$OUT.tar.gz" "$TS" 2>/dev/null
 exit $rc
