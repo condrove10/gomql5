@@ -114,6 +114,7 @@ exits with `<n>`. rc 77 is never used, because `session.sh` reads it as SKIP.
 | 14 | `route_unverified` | the state `servers.dat` has no `servers.dat.verified` marker for this server and file |
 | 15 | `image_stale` | the image is missing, or was not built from the local `mql5/` and `docker/mt5` files |
 | 16 | `broker_unreachable` | no TCP connection within 5 s to the `address:port` in `MT5_SERVER` |
+| 17 | `terminal_running` | a running container with host networking already has `GOBRIDGE_PORT=<port>`: stop it or use `--port` (a bridged container is not refused) |
 | 20 | `compile_failed` | the EA did not compile; the compile line is printed |
 | 21 | `ea_timeout` | the EA did not connect within the budget |
 | 22 | `fallback_server` | the account is on another server than `MT5_EXPECT_SERVER` (the MetaQuotes fallback) |

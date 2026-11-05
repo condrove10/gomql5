@@ -17,6 +17,13 @@ T=$(mktemp -d)
 LISTENER=""
 trap '[ -z "$LISTENER" ] || kill "$LISTENER" 2>/dev/null; rm -rf "$T"' EXIT
 tree=$T/tree image=$T/image
+CT=$T/ct; mkdir -p "$CT" # the containers the stub docker lists: one directory each
+# ct ID NETWORKMODE ENV...: a running container with that network mode and env.
+ct() {
+  local id=$1 net=$2; shift 2
+  mkdir -p "$CT/$id"; echo "$net" >"$CT/$id/net"; printf '%s\n' "$@" >"$CT/$id/env"
+}
+ct_reset() { rm -rf "$CT"; mkdir -p "$CT"; }
 LOGIN=LOGIN-VALUE-77 PW=PASSWORD-VALUE-77 SRV=SERVERNAME-VALUE-77
 
 mkdir -p "$T/bin" "$T/bin-timeout" "$tree/scripts" "$tree/docker/mt5" "$tree/mql5/Experts/GoBridge"
@@ -49,6 +56,16 @@ case $1 in
     fi
     echo run >>"$STUB_OUT/docker-runs"
     ;;
+  ps)
+    for d in "$STUB_CT"/*/; do [ -d "$d" ] && basename "$d"; done
+    ;;
+  inspect) # inspect -f FORMAT ID
+    [ -d "$STUB_CT/$4" ] || exit 1
+    case $3 in
+      *NetworkMode*) cat "$STUB_CT/$4/net" ;;
+      *) cat "$STUB_CT/$4/env" ;;
+    esac
+    ;;
   *) exit 1 ;;
 esac
 EOF
@@ -62,7 +79,7 @@ chmod +x "$T/bin/docker" "$T/bin/go" "$T/bin-timeout/timeout"
 # the output, exit=N, docker_runs=N, hash_runs=N and result.txt.
 run_script() {
   local o; o=$(mktemp -d "$T/out.XXXXXX")
-  PATH="${EXTRA_PATH:-}$T/bin:$PATH" STUB_OUT="$o" STUB_IMG="$image" E2E_IMAGE=stub/image \
+  PATH="${EXTRA_PATH:-}$T/bin:$PATH" STUB_OUT="$o" STUB_IMG="$image" STUB_CT="$CT" E2E_IMAGE=stub/image \
     MT5_LOGIN="${L-$LOGIN}" MT5_PASSWORD="${P-$PW}" MT5_SERVER="${S-$SRV}" MT5_EXPECT_SERVER="${X-}" \
     bash "$tree/scripts/goldrec-e2e.sh" --out "$o" "$@" 2>&1
   echo "exit=$?"
@@ -209,6 +226,26 @@ else
 fi
 out=$(S=127.0.0.1:1 X=FTMO-Demo pf --state "$(state)")
 refused "address: an unverified state does not matter, the probe does" "$out" broker_unreachable 16
+
+# Row 17: terminal_running. Only host networking reaches 127.0.0.1:PORT, so only a
+# running container with host networking and this port is refused; the other
+# container's env never prints.
+ct_reset
+ct ctr-host-7789 host "GOBRIDGE_PORT=7789" "OTHER_SECRET=CT-ENV-VALUE-77"
+out=$(pf --state "$good")
+refused "host container, same port" "$out" terminal_running 17
+has "host container, same port: container named" "$out" "ctr-host-7789"
+hasnt "host container, same port: its env not printed" "$out" "CT-ENV-VALUE-77"
+ct_reset
+ct ctr-bridge-7789 bridge "GOBRIDGE_PORT=7789" "OTHER_SECRET=CT-ENV-VALUE-77"
+out=$(pf --state "$good")
+passed "bridged container, same port" "$out"
+hasnt "bridged container, same port: its env not printed" "$out" "CT-ENV-VALUE-77"
+ct_reset
+ct ctr-host-7790 host "GOBRIDGE_PORT=7790"
+out=$(pf --state "$good")
+passed "host container, other port" "$out"
+ct_reset
 
 # Order: the cheap checks come first, and each failure is the earliest row.
 echo 'edit' >>"$tree/docker/mt5/lib.sh"

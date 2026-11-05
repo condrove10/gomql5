@@ -48,6 +48,8 @@
 # --source api needs MYFXBOOK_EMAIL/MYFXBOOK_PASSWORD.
 #
 # Exit 0 = PASS, else the failure's rc (never 77: scripts/session.sh reports that as SKIP).
+# rc 17 (terminal_running): a running container with host networking already has
+# GOBRIDGE_PORT=<port> (its env is never printed); see docs/TESTING.md for the table.
 # OUT/result.txt always holds reason=, rc=, stage= and elapsed= (whole-run seconds); a failure
 # prints "FAIL reason=<r>: <why>". --require-live prints a LIVE PASS line too.
 # Runs $E2E_IMAGE (default gomql5/mt5:local; build with scripts/e2e.sh --build).
@@ -243,6 +245,15 @@ preflight_live() {
     *:*) ;; # the address is the route
     *) [ -n "$SERVERS_DAT" ] || check_state_route ;;
   esac
+  # Another terminal on this port would take the EA's connection and supply the ticks.
+  # Only host networking reaches 127.0.0.1:PORT, so a bridged container is no conflict.
+  # The grep's output is discarded: the other container's env never reaches the log.
+  for c in $(docker ps -q --filter label=org.gomql5.role=mt5 2>/dev/null); do
+    [ "$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$c" 2>/dev/null)" = host ] || continue
+    if docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$c" 2>/dev/null | grep -Fxq "GOBRIDGE_PORT=$PORT"; then
+      live_fail terminal_running 17 "container $c already runs an EA for port $PORT: stop it or use --port"
+    fi
+  done
   id=$(image_id) || live_fail image_stale 15 "$IMAGE missing (scripts/e2e.sh --build)"
   say "preflight: image $IMAGE id=${id:-?}"
   want=$(sh -c "$CONTENT_HASH" sh mql5 docker/mt5/lib.sh docker/mt5/entrypoint.sh)
