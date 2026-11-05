@@ -314,11 +314,6 @@ have_obs() { [ "$(lines "$DATA/sentiment.jsonl")" -ge 2 ]; }
 # `grep -c … || echo 0`: with no match grep prints 0 AND fails, giving "0\n0".)
 count() { local n; n=$(grep -c -- "$1" "$2" 2>/dev/null); echo "${n:-0}"; }
 connects() { [ "$(count '"kind":"terminal_connected"' "$DATA/events.jsonl")" -ge "$1" ]; }
-have_live_ticks() { [ "$(count '"trade_server_connected":true' "$DATA/prices.jsonl")" -ge "$1" ]; }
-# The LATEST terminal_info event says connected (goldrec writes one per EA
-# connection and on every change; an earlier "true" says nothing after a
-# restart or an account switch).
-trade_connected() { grep '"kind":"terminal_info"' "$DATA/events.jsonl" 2>/dev/null | tail -1 | grep -q '"trade_server_connected":true'; }
 # Echo the terminal's Network journal lines (login progress) once each.
 SEEN_NET=0
 show_network() {
@@ -541,8 +536,8 @@ if [ $LIVE = 1 ]; then
   ensure_live 1 $((MIN_TICKS > LIVE_FRESH ? MIN_TICKS : LIVE_FRESH))
 else
   wait_for ea_timeout 21 "EA connection" connects 1
+  wait_for no_fresh_ticks 28 "$MIN_TICKS $SYM ticks" have_ticks "$MIN_TICKS"
 fi
-wait_for no_fresh_ticks 28 "$MIN_TICKS $SYM ticks" have_ticks "$MIN_TICKS"
 wait_for unclassified 1 "2 positioning observations" have_obs
 if [ $RESTART = 1 ]; then
   STAGE=restart
@@ -561,8 +556,8 @@ if [ $RESTART = 1 ]; then
     ensure_live $((live_conn + 1)) "$LIVE_FRESH"
   else
     wait_for ea_timeout 21 "reconnect" connects $((before_conn + 1))
+    wait_for no_fresh_ticks 28 "ticks after reconnect" have_ticks $((before + 1))
   fi
-  wait_for no_fresh_ticks 28 "ticks after reconnect" have_ticks $((before + 1))
 fi
 sleep 2 # let one flush/status cycle pass
 say "PASS: $(lines "$DATA/prices.jsonl") ticks, $(lines "$DATA/sentiment.jsonl") positioning observations, $(grep -c terminal_connected "$DATA/events.jsonl") connections"
