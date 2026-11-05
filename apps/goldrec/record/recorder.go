@@ -65,6 +65,9 @@ type Config struct {
 	// tick has arrived for this long, re-select and re-subscribe the symbol
 	// (and record why). Default 10s.
 	ResyncQuiet time.Duration
+	// SelectRetry: while the terminal refuses the broker symbol, how often to
+	// ask again, for as long as the connection lasts. Default 5s.
+	SelectRetry time.Duration
 }
 
 // Recorder is safe to run once.
@@ -164,6 +167,9 @@ func New(cfg Config) (*Recorder, error) {
 	if cfg.ResyncQuiet <= 0 {
 		cfg.ResyncQuiet = 10 * time.Second
 	}
+	if cfg.SelectRetry <= 0 {
+		cfg.SelectRetry = 5 * time.Second
+	}
 	var b [8]byte
 	rand.Read(b[:])
 	r := &Recorder{cfg: cfg, runID: time.Now().UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(b[:4]), seq: map[string]uint64{}}
@@ -228,6 +234,12 @@ func (r *Recorder) updateTerm(f func(*termState)) {
 func (r *Recorder) setErr(err error) {
 	r.mu.Lock()
 	r.st.LastError = err.Error()
+	r.mu.Unlock()
+}
+
+func (r *Recorder) clearErr() {
+	r.mu.Lock()
+	r.st.LastError = ""
 	r.mu.Unlock()
 }
 
@@ -550,28 +562,23 @@ func (r *Recorder) serveTerminal(ctx context.Context, term *mt5.Terminal) error 
 		hwg.Wait()
 	}()
 
-	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	sym := r.cfg.BrokerSymbol
-	if err := term.SymbolSelect(cctx, sym, true); err != nil {
-		cands, _ := term.SymbolsGet(cctx, candidatesPattern(sym), false)
-		r.connEvent("quality", "what", "broker_symbol_unavailable", "broker_symbol", sym, "error", err.Error(), "candidates", cands)
-		r.cfg.Log.Error("broker symbol unavailable; set -broker-symbol", "symbol", sym, "err", err, "candidates", cands)
-		r.setErr(fmt.Errorf("broker symbol %q: %v", sym, err))
-		// Stay connected so the operator can see it in status; nothing to record.
-		select {
-		case <-term.Done():
-		case <-ctx.Done():
-		}
+	if !r.selectSymbol(ctx, term, sym) {
 		return nil
 	}
-	if si, err := term.SymbolInfo(cctx, sym); err == nil {
+	ictx, icancel := context.WithTimeout(ctx, symbolCallTimeout)
+	si, err := term.SymbolInfo(ictx, sym)
+	icancel()
+	if err == nil {
 		ts := r.termNow()
 		r.connEvent("instrument", "broker_symbol", si.Name, "description", si.Description, "digits", si.Digits,
 			"currency_base", si.CurrencyBase, "currency_profit", si.CurrencyProfit, "contract_size", si.TradeContractSize,
 			"path", si.Path, "login", ts.login, "server", ts.server)
 	}
-	if err := term.SubscribeTicks(cctx, sym); err != nil {
+	sctx, scancel := context.WithTimeout(ctx, symbolCallTimeout)
+	err = term.SubscribeTicks(sctx, sym)
+	scancel()
+	if err != nil {
 		r.setErr(err)
 		r.cfg.Log.Error("subscribe failed", "err", err)
 		return nil // drop this connection; the EA reconnects
@@ -636,6 +643,56 @@ func (r *Recorder) serveTerminal(ctx context.Context, term *mt5.Terminal) error 
 			if n == 1 {
 				r.cfg.Log.Info("first broker tick", "symbol", sym, "bid", tk.Bid, "ask", tk.Ask, "broker_time", rec.ProviderTimeText)
 			}
+		}
+	}
+}
+
+// symbolCallTimeout bounds each call around selecting the symbol on its own:
+// the retry has no end, so no deadline can be shared between its calls.
+const symbolCallTimeout = 10 * time.Second
+
+// selectSymbol selects sym, asking again every SelectRetry, and reports whether
+// it did before the connection ended. A refusal says little until the account
+// is synchronized, because the sync rebuilds Market Watch and brings the
+// broker's symbols in; judging it at a deadline is up to whoever reads the
+// events. The event is written when the error or the candidates change, and a
+// failed SymbolsGet keeps the previous candidates, so a quiet retry writes
+// nothing. The error in status lasts until a select succeeds.
+func (r *Recorder) selectSymbol(ctx context.Context, term *mt5.Terminal, sym string) bool {
+	t := time.NewTicker(r.cfg.SelectRetry)
+	defer t.Stop()
+	var cands []string
+	var seen string
+	for {
+		sctx, scancel := context.WithTimeout(ctx, symbolCallTimeout)
+		err := term.SymbolSelect(sctx, sym, true)
+		scancel()
+		if err == nil {
+			r.clearErr()
+			return true
+		}
+		// The call failed because the connection went: that is no news about
+		// the symbol. Err, because a pending call wakes before Done closes.
+		if ctx.Err() != nil || term.Err() != nil {
+			return false
+		}
+		gctx, gcancel := context.WithTimeout(ctx, symbolCallTimeout)
+		if c, gerr := term.SymbolsGet(gctx, candidatesPattern(sym), false); gerr == nil {
+			cands = c
+		}
+		gcancel()
+		if now := err.Error() + "\x00" + strings.Join(cands, ","); now != seen {
+			seen = now
+			r.connEvent("quality", "what", "broker_symbol_unavailable", "broker_symbol", sym, "error", err.Error(), "candidates", cands)
+			r.cfg.Log.Error("broker symbol unavailable; set -broker-symbol", "symbol", sym, "err", err, "candidates", cands)
+			r.setErr(fmt.Errorf("broker symbol %q: %v", sym, err))
+		}
+		select {
+		case <-t.C:
+		case <-term.Done():
+			return false
+		case <-ctx.Done():
+			return false
 		}
 	}
 }

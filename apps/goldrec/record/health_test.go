@@ -75,6 +75,12 @@ func (f *fakeAccount) dial(t *testing.T, srv *mt5.Server) (*mt5test.FakeEA, chan
 // startHealth runs a recorder with a fast health poll; stop ends it and closes the store.
 func startHealth(t *testing.T) (dir string, r *Recorder, srv *mt5.Server, stop func()) {
 	t.Helper()
+	return startRecorder(t, func(*Config) {})
+}
+
+// startRecorder is startHealth with the config adjusted first.
+func startRecorder(t *testing.T, adjust func(*Config)) (dir string, r *Recorder, srv *mt5.Server, stop func()) {
+	t.Helper()
 	dir = t.TempDir()
 	st, _ := Open(dir)
 	srv, err := mt5.Listen("127.0.0.1:0", mt5.Config{Token: "tok", Logger: quiet()})
@@ -82,8 +88,10 @@ func startHealth(t *testing.T) (dir string, r *Recorder, srv *mt5.Server, stop f
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { srv.Close() })
-	r, _ = New(Config{Store: st, Log: quiet(), Server: srv, BrokerSymbol: "XAUUSD",
-		FlushEvery: 10 * time.Millisecond, HealthEvery: 10 * time.Millisecond, ResyncQuiet: time.Hour})
+	cfg := Config{Store: st, Log: quiet(), Server: srv, BrokerSymbol: "XAUUSD",
+		FlushEvery: 10 * time.Millisecond, HealthEvery: 10 * time.Millisecond, ResyncQuiet: time.Hour}
+	adjust(&cfg)
+	r, _ = New(cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- r.Run(ctx) }()

@@ -298,8 +298,8 @@ func TestPriceInstrumentNeverMislabelled(t *testing.T) {
 	}
 }
 
-// Shutdown must not wait for the EA to disconnect, even in the
-// "symbol unavailable" idle state.
+// Shutdown must not wait for the EA to disconnect, even while the select of an
+// unavailable symbol is being retried.
 func TestShutdownWithWrongSymbolWhileConnected(t *testing.T) {
 	st, _ := Open(t.TempDir())
 	srv, _ := mt5.Listen("127.0.0.1:0", mt5.Config{Token: "tok", Logger: quiet()})

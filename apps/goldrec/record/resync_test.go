@@ -4,7 +4,9 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -176,5 +178,181 @@ func TestCandidatesPattern(t *testing.T) {
 		if got := candidatesPattern(sym); got != want {
 			t.Errorf("%s: %q, want %q", sym, got, want)
 		}
+	}
+}
+
+// selectScript is an EA whose symbol_select and symbols_get answers the test
+// decides per call. subscribed fires once the recorder subscribes.
+func selectScript(sel func(call int) *protocol.Error, cands func() []string) (*mt5test.FakeEA, chan struct{}) {
+	ea := mt5test.New("tok")
+	subscribed := make(chan struct{}, 8)
+	var mu sync.Mutex
+	calls := 0
+	ea.Handlers["symbol_select"] = func(map[string]any) (any, *protocol.Error) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if perr := sel(n); perr != nil {
+			return nil, perr
+		}
+		return true, nil
+	}
+	ea.Handlers["symbols_get"] = func(map[string]any) (any, *protocol.Error) { return cands(), nil }
+	ea.Handlers["symbol_info"] = func(map[string]any) (any, *protocol.Error) { return map[string]any{"name": "XAUUSD"}, nil }
+	ea.Handlers["subscribe_ticks"] = func(map[string]any) (any, *protocol.Error) {
+		subscribed <- struct{}{}
+		return true, nil
+	}
+	return ea, subscribed
+}
+
+func unavailable(evs []map[string]any) []map[string]any {
+	var out []map[string]any
+	for _, e := range eventsOf(evs, "quality") {
+		if e["what"] == "broker_symbol_unavailable" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// A symbol the terminal refuses until after the sync: the select keeps failing
+// past the 30 s the calls used to share, its first attempt hangs and must time
+// out on its own, and then ticks flow on the same connection. Takes over 30 s
+// of real time, because the old window was a real deadline.
+func TestSymbolSelectRetriesAfterSync(t *testing.T) {
+	t.Parallel()
+	const window = 31 * time.Second
+	dir, r, srv, stop := startRecorder(t, func(c *Config) { c.SelectRetry = 100 * time.Millisecond })
+	start := time.Now()
+	ea, subscribed := selectScript(func(call int) *protocol.Error {
+		switch {
+		case call == 1:
+			return mt5test.NoReply
+		case time.Since(start) < window:
+			return &protocol.Error{Code: -4, Message: "symbol 'XAUUSD' not found"}
+		}
+		return nil
+	}, func() []string { return []string{} })
+	if err := ea.Dial(srv.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	defer ea.Close()
+
+	select {
+	case <-subscribed:
+	case <-time.After(window + 10*time.Second):
+		t.Fatalf("no subscribe %v after the connect; last error: %q", time.Since(start), r.Snapshot().LastError)
+	}
+	if took := time.Since(start); took < window {
+		t.Fatalf("subscribed after %v, before the select could succeed", took)
+	}
+	if e := r.Snapshot().LastError; e != "" {
+		t.Fatalf("error still in status after the select succeeded: %q", e)
+	}
+	sendTick(ea, 1762268400100)
+	sendTick(ea, 1762268400200)
+	waitUntil(t, "the ticks", func() bool { return r.Snapshot().Ticks == 2 })
+	stop()
+
+	ev := readLines(t, filepath.Join(dir, "events.jsonl"))
+	if c := eventsOf(ev, "terminal_connected"); len(c) != 1 {
+		t.Fatalf("terminal_connected %d times: the connection must survive the retries", len(c))
+	}
+	if i := eventsOf(ev, "instrument"); len(i) != 1 || i[0]["broker_symbol"] != "XAUUSD" {
+		t.Fatalf("instrument after the late select: %v", i)
+	}
+	// The hung attempt, then "not found": hundreds of attempts, two answers.
+	q := unavailable(ev)
+	if len(q) != 2 || q[1]["error"] != "mt5 error -4: symbol 'XAUUSD' not found" {
+		t.Fatalf("unavailable events: %v", q)
+	}
+}
+
+// The event appears only when what it says changes: the same refusal is
+// silent, and new candidates (the sync brought symbols in) are news.
+func TestSymbolRetryEventOnlyOnChange(t *testing.T) {
+	var mu sync.Mutex
+	cands := []string{}
+	failing := true
+	dir, r, srv, stop := startRecorder(t, func(c *Config) { c.SelectRetry = 5 * time.Millisecond })
+	var attempts atomic.Int64
+	ea, subscribed := selectScript(func(call int) *protocol.Error {
+		attempts.Store(int64(call))
+		mu.Lock()
+		defer mu.Unlock()
+		if failing {
+			return &protocol.Error{Code: -4, Message: "not found"}
+		}
+		return nil
+	}, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return cands
+	})
+	if err := ea.Dial(srv.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	defer ea.Close()
+	waitUntil(t, "several attempts", func() bool { return attempts.Load() >= 10 })
+	mu.Lock()
+	cands = []string{"GOLD.m"}
+	mu.Unlock()
+	seenAt := attempts.Load()
+	waitUntil(t, "more attempts", func() bool { return attempts.Load() >= seenAt+10 })
+	if e := r.Snapshot().LastError; !strings.Contains(e, "not found") {
+		t.Fatalf("status during the retries: %q", e)
+	}
+	mu.Lock()
+	failing = false
+	mu.Unlock()
+	recvOrFail(t, subscribed)
+	sendTick(ea, 1762268400100) // read only once the subscribe has returned
+	waitUntil(t, "the tick", func() bool { return r.Snapshot().Ticks == 1 })
+	stop()
+
+	q := unavailable(readLines(t, filepath.Join(dir, "events.jsonl")))
+	if len(q) != 2 || len(toStrings(q[0]["candidates"])) != 0 || strings.Join(toStrings(q[1]["candidates"]), ",") != "GOLD.m" {
+		t.Fatalf("unavailable events over %d attempts: %v", attempts.Load(), q)
+	}
+	if e := r.Snapshot().LastError; e != "" {
+		t.Fatalf("error still in status: %q", e)
+	}
+}
+
+// The retry ends with the connection, says nothing about the symbol while it
+// does, and the next connection starts over.
+func TestSymbolRetryEndsWithConnection(t *testing.T) {
+	dir, r, srv, stop := startRecorder(t, func(c *Config) { c.SelectRetry = time.Millisecond })
+	fail := func(int) *protocol.Error { return &protocol.Error{Code: -4, Message: "not found"} }
+	first, _ := selectScript(fail, func() []string { return []string{} })
+	if err := first.Dial(srv.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the select error", func() bool { return r.Snapshot().LastError != "" })
+	first.Close()
+	waitUntil(t, "the disconnect", func() bool { return !r.Snapshot().TerminalConnected })
+
+	second, subscribed := selectScript(func(int) *protocol.Error { return nil }, func() []string { return []string{} })
+	if err := second.Dial(srv.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	recvOrFail(t, subscribed)
+	sendTick(second, 1762268400100) // read only once the subscribe has returned
+	waitUntil(t, "the tick", func() bool { return r.Snapshot().Ticks == 1 })
+	stop()
+
+	ev := readLines(t, filepath.Join(dir, "events.jsonl"))
+	if d := eventsOf(ev, "terminal_disconnected"); len(d) < 1 || d[0]["conn"] != float64(1) {
+		t.Fatalf("terminal_disconnected: %v", d)
+	}
+	q := unavailable(ev)
+	if len(q) != 1 || q[0]["error"] != "mt5 error -4: not found" {
+		t.Fatalf("unavailable events: %v", q)
+	}
+	if e := r.Snapshot().LastError; e != "" {
+		t.Fatalf("error from the old connection still in status: %q", e)
 	}
 }
