@@ -69,6 +69,21 @@ per process.
 | `MYFXBOOK_EMAIL`, `MYFXBOOK_PASSWORD` | | vendor login. Never logged or archived. |
 | `GOBRIDGE_TOKEN` | | EA shared token |
 
+### Judge a live run: `-check-live`
+
+`-check-live` records nothing. It judges the data already in `-out` against
+the live rules L1 to L6 (`docs/TESTING.md`) for one connection of the latest
+run. It prints one `reason=` line and exits with that rule's rc (0 ok, 64
+pending, the others as in the `docs/TESTING.md` table):
+
+```bash
+bin/goldrec -check-live -out goldrec-data -expect-login <login> -expect-server <server> -min-fresh 3 -conn 1
+```
+
+`-expect-login` and `-expect-server` are required. `-conn` is the connection
+number, from 1. `-min-fresh` defaults to 3 and does not count the
+connection's first record.
+
 ## 2. What is recorded
 
 Every line carries `schema:"goldrec/1"`, a stable `id` (`<run_id>-<stream>-<seq>`),
@@ -79,8 +94,8 @@ the `run_id` and the per-stream `seq`. All collector times are UTC.
 | `attempts.jsonl` | request to the vendor, or replay read | method, request start, response end, duration, HTTP status, `status` (see below), redacted message, body sha256, `raw_ref`, budget used and remaining |
 | `sentiment.jsonl` | XAUUSD observation from a successful response | `supplied` (the vendor's exact decimal text, e.g. `"836.10"`), `derived` (our `long_volume_share`, `long_count_share`, `sum_positions`, `percentage_sum`, `total_matches_count`), `quality` flags, `collected_at`, `provider_time:null` with a note, `same_as_previous`, `source_mode`, `entitlement`, `raw_ref` |
 | `quarantine.jsonl` | observation that can't be interpreted (a missing, null or invalid required field) | same shape, `quarantined:true`, never zero-filled |
-| `prices.jsonl` | broker tick | feed, broker company/server/login, broker symbol, instrument, bid/ask/last/volume/flags, `provider_time_msc` verbatim, the broker wall-clock text, `trade_server_connected`, `received_at` |
-| `events.jsonl` | run start/stop, terminal connect/disconnect, `terminal_info`, `instrument` metadata (digits, contract size, currencies), quality events (`symbol_absent`, `unknown_top_level_fields`, `broker_symbol_unavailable`) | |
+| `prices.jsonl` | broker tick | feed, broker company/server/login, broker symbol, instrument, bid/ask/last/volume/flags, `provider_time_msc` verbatim, the broker wall-clock text, `trade_server_connected`, `received_at`, `conn` (the connection counter, from 1 within the run) and `server_time` (broker server time in seconds, from the health poll) |
+| `events.jsonl` | run start/stop, terminal connect/disconnect, `terminal_info`, `instrument` metadata (digits, contract size, currencies), quality events (`symbol_absent`, `unknown_top_level_fields`, `broker_symbol_unavailable`), `account` (`login`, `server`, `company`, `trade_allowed`; written on each connection's first health poll, then on change) | every connection event carries `conn`; `symbol_resync` also carries `server_time` |
 | `raw/ab/<sha256>.json.gz` | distinct outlook body (all symbols), verbatim | linked from attempts and observations by `raw_ref`. Login bodies are never archived. |
 | `status.json` | health snapshot (every 5 s) | attempts by status, last attempt, last observation, last value change, budget, terminal state, tick count, dropped ticks, last error |
 
@@ -212,8 +227,10 @@ make session-live
    * or set `MT5_SERVER=address:port` and skip `servers.dat`.
 
    `mt5-state/` keeps the terminal's own copy of `servers.dat` between
-   sessions, so after one successful login the config alone is enough. Then
-   run:
+   sessions. Measured on FTMO-Demo on 2026-11-05: one manual login (in the
+   image, with the read-only password) was enough. After it, config-only
+   logins passed `make e2e-live` with `MT5_SERVERS_DAT` unset, from the saved
+   file alone. Then run:
 
    ```bash
    make session-live

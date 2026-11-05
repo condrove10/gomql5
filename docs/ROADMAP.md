@@ -46,17 +46,26 @@ Session 4 (2026-11-04):
   sessions) and `mt5ctl find-broker` (since removed with the account wizard:
   logins are config-only, see `docs/goldrec.md` §6).
 
+Session 5 (2026-11-05):
+
+* **Live ticks verified against FTMO-Demo** with the read-only password. One
+  manual login in the image, then config-only: `make e2e-live` PASS (44 ticks,
+  8 positioning observations, 2 connections) from `mt5-state/servers.dat`
+  alone, with `MT5_SERVERS_DAT` unset. The command runs
+  `scripts/goldrec-e2e.sh --require-live --restart`; see `docs/TESTING.md`
+  §2a for the rules and rc table.
+* **Broker login, trading:** still **not verified**.
+
 See `docs/ALTERNATIVES.md` for the evaluated headless/config-only options (DLL bridge, file bridge, Wine without X, MCP, `Server=host:port`).
 
 ## Open items, in priority order
 
-0. **goldrec go-live** (needs credentials and a network that reaches the
-   broker; put `MT5_SERVERS_DAT` (or an `address:port` `MT5_SERVER`) in `.env`, run
-   `make session-live` and review the bundle): `goldrec -source api -once`
-   with Myfxbook credentials; check the field names and the session format;
-   then `goldrec-e2e.sh --source api --restart` with a demo account
-   (`MT5_*`), expecting `trade_server_connected:true`. Make `e2e.sh` require
-   a fresh tick once an account is available.
+0. **goldrec go-live.** The live-tick part is **done** (FTMO-Demo,
+   2026-11-05, Session 5). Account setup: `docs/goldrec.md` §6.
+   Still open, and untested: Myfxbook. `goldrec -source api -once` with
+   Myfxbook credentials; check the field names and the session format; then
+   `goldrec-e2e.sh --source api --restart` with a demo account. Make `e2e.sh`
+   require a fresh tick once an account is available.
 
 1. **Demo account end to end.** Set `MT5_LOGIN`/`MT5_PASSWORD`/`MT5_SERVER`
    (demo), run `docker compose up`, then run `examples/basic -trade`. Check
