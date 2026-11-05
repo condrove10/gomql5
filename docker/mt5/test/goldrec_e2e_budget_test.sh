@@ -444,6 +444,7 @@ mkdir -p "$T/bin"
 cat >"$T/bin/docker" <<'EOF'
 #!/bin/bash
 d=$STUB_OUT/data
+mkdir -p "$d" # as the recorder does: its -out directory, which a reused --out moved aside
 case $1 in
   image)
     [ "${STUB_IMAGE_RC:-0}" = 0 ] || exit "$STUB_IMAGE_RC"
@@ -529,7 +530,7 @@ exec "$REAL_SLEEP" 0.02
 EOF
 chmod +x "$T/bin/docker" "$T/bin/go" "$T/bin/sleep" "$T/recorder"
 whole() {
-  local o="$T/whole.$RANDOM"; mkdir -p "$o/data"
+  local o=${STUB_OUT_DIR:-$T/whole.$RANDOM}; mkdir -p "$o" # STUB_OUT_DIR: a reused --out
   [ -z "${STUB_OLD_RESULT:-}" ] || echo "$STUB_OLD_RESULT" >"$o/result.txt"
   PATH="$T/bin:$PATH" REAL_SLEEP="$real_sleep" STUB_OUT="$o" STUB_RECORDER_BIN="$T/recorder" E2E_IMAGE=stub/image \
     STUB_TREE="$here/../../.." MT5_LOGIN="${STUB_LOGIN:-}" MT5_PASSWORD="${STUB_PASSWORD:-}" MT5_SERVER="${STUB_SERVER:-}" MT5_EXPECT_SERVER="" \
@@ -563,6 +564,16 @@ has "servers.dat missing: no container" "$out" "docker_runs=0"
 
 out=$(STUB_OLD_RESULT=reason=ok STUB_GO_RC=7 whole)
 reason "a reused --out: the old result does not count" "$out" unclassified 7 preflight
+
+# A reused --out: an earlier run's data and state are moved aside, so a run whose
+# terminal never connects cannot pass on them (the old ticks, connections and observations).
+reused=$T/reused
+out=$(STUB_OUT_DIR=$reused whole)
+reason "reused --out: the first run passes" "$out" ok 0 start
+out=$(STUB_OUT_DIR=$reused STUB_FEED=none whole --timeout 0)
+reason "reused --out with old data, no EA: not ok" "$out" ea_timeout 21 start
+hasnt "reused --out with old data, no EA: no PASS line" "$out" "PASS:"
+if compgen -G "$reused/data.old-*" >/dev/null; then echo "ok   reused --out: old data moved aside"; else echo "FAIL reused --out: no data.old-* directory in $reused"; fail=1; fi
 
 out=$(STUB_FEED=none STUB_RECORDER=die whole)
 reason "recorder dies" "$out" recorder_died 30 start

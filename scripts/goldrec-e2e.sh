@@ -82,6 +82,7 @@ OUT="${OUT:-e2e-out/goldrec-$TS}"
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 rm -f "$OUT/result.txt" # a reused --out must not report the previous run's result
+for d in data state; do [ ! -e "$OUT/$d" ] || mv "$OUT/$d" "$OUT/$d.old-$TS"; done # and must not count its data or route
 DATA=$OUT/data
 IMAGE=${E2E_IMAGE:-gomql5/mt5:local} NAME=gomql5-goldrec-$TS TOKEN=goldrec-e2e APP_PID=""
 say() { echo "[goldrec-e2e] $*"; }
