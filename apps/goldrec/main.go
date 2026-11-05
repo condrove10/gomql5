@@ -45,7 +45,18 @@ func main() {
 	duration := flag.Duration("duration", 0, "stop after this long (0 = until SIGINT/SIGTERM)")
 	resyncQuiet := flag.Duration("resync-quiet", 10*time.Second, "re-select and re-subscribe the broker symbol after this long without ticks while connected")
 	apiBase := flag.String("api-base", myfxbook.DefaultBaseURL, "vendor API root")
+	checkLive := flag.Bool("check-live", false, "record nothing: judge the data in -out against the live rules, print one reason= line and exit with its code (0 ok, 64 pending)")
+	expectLogin := flag.Int64("expect-login", 0, "with -check-live: the login the terminal must be on")
+	expectServer := flag.String("expect-server", "", "with -check-live: the trade server the terminal must be on")
+	minFresh := flag.Int("min-fresh", 3, "with -check-live: fresh ticks required, not counting the connection's first")
+	conn := flag.Uint64("conn", 0, "with -check-live: the connection to judge, from 1, within the latest run")
 	flag.Parse()
+
+	if *checkLive {
+		res := record.CheckLive(record.LiveCheck{Dir: *out, ExpectLogin: *expectLogin, ExpectServer: *expectServer, MinFresh: *minFresh, Conn: *conn})
+		fmt.Println(res)
+		os.Exit(res.RC)
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	fail := func(msg string, args ...any) { log.Error(msg, args...); os.Exit(1) }
