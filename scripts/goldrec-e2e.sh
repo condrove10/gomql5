@@ -203,10 +203,19 @@ seed_state() {
 # the state unverified rather than wrong.
 promote_state() {
   if [ ! -s "$OUT/state/servers.dat" ]; then say "state: the terminal saved no servers.dat; $STATE_DIR not changed"; return 0; fi
-  mkdir -p "$STATE_DIR"
-  rm -f "$STATE_DIR/servers.dat.verified"
-  cp "$OUT/state/servers.dat" "$STATE_DIR/servers.dat.gomql5-tmp" && mv -f "$STATE_DIR/servers.dat.gomql5-tmp" "$STATE_DIR/servers.dat"
-  printf 'server=%s\nsha256=%s\n' "$EXPECT_SERVER" "$(sha256sum <"$STATE_DIR/servers.dat" | cut -d' ' -f1)" >"$STATE_DIR/servers.dat.verified"
+  # Every step is checked: a failure leaves the marker absent, so the old file is never certified.
+  mkdir -p "$STATE_DIR" || { say "state: cannot create $STATE_DIR; not promoted"; return 0; }
+  rm -f "$STATE_DIR/servers.dat.verified" || { say "state: cannot clear the marker; $STATE_DIR not promoted"; return 0; }
+  cp "$OUT/state/servers.dat" "$STATE_DIR/servers.dat.gomql5-tmp" && mv -f "$STATE_DIR/servers.dat.gomql5-tmp" "$STATE_DIR/servers.dat" || {
+    rm -f "$STATE_DIR/servers.dat.gomql5-tmp"
+    say "state: promotion failed; $STATE_DIR stays unverified"
+    return 0
+  }
+  printf 'server=%s\nsha256=%s\n' "$EXPECT_SERVER" "$(sha256sum <"$STATE_DIR/servers.dat" | cut -d' ' -f1)" >"$STATE_DIR/servers.dat.verified" || {
+    rm -f "$STATE_DIR/servers.dat.verified"
+    say "state: cannot write the marker; $STATE_DIR stays unverified"
+    return 0
+  }
   say "state: promoted to $STATE_DIR/servers.dat, verified for $EXPECT_SERVER (sha256 $(sha256sum <"$STATE_DIR/servers.dat" | cut -c1-12))"
 }
 # preflight_live: everything a --require-live run needs that can be checked before

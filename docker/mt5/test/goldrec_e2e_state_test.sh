@@ -175,6 +175,24 @@ for check in fallback:22 wrong:25 stale:29; do
   if grep -q 'LIVE PASS' "$O/console.txt"; then echo "FAIL ${check%:*} verdict: LIVE PASS printed"; fail=1; else echo "ok   ${check%:*} verdict: no LIVE PASS"; fi
 done
 
+# A failed promotion copy (disk full, say) after a LIVE PASS must not certify the
+# old file: the stub cp fails only for the promotion's temp file. The marker must be
+# absent afterwards, the old servers.dat must stay, and "promoted" must not be printed.
+cat >"$T/bin/cp" <<'EOF2'
+#!/bin/bash
+case ${@: -1} in
+  *gomql5-tmp) if [ -n "${FAKE_CP_FAIL:-}" ]; then echo "cp: No space left on device" >&2; exit 1; fi ;;
+esac
+exec /bin/cp "$@"
+EOF2
+chmod +x "$T/bin/cp"
+st=$(state "$SRV")
+FAKE_CP_FAIL=1 FAKE_TERMINAL_DAT="terminal saved routes" run_script --require-live --live-budget 30 --state "$st"
+same "failed promotion copy: result" "$(sed -n 1p "$O/run/result.txt")" "reason=ok"
+same "failed promotion copy: servers.dat stays old" "$(cat "$st/servers.dat")" "servers bytes"
+if [ -e "$st/servers.dat.verified" ]; then echo "FAIL failed promotion copy: marker left: $(cat "$st/servers.dat.verified" | tr '\n' ' ')"; fail=1; else echo "ok   failed promotion copy: no marker"; fi
+if grep -q 'promoted to' "$O/console.txt"; then echo "FAIL failed promotion copy: 'promoted' printed"; fail=1; else echo "ok   failed promotion copy: no 'promoted' line"; fi
+
 # Without --require-live nothing is promoted, even on a PASS.
 st=$(state "$SRV")
 before=$(cat "$st/servers.dat" "$st/servers.dat.verified")
