@@ -26,9 +26,13 @@
 # directory, and session-out/<timestamp>.tar.gz. Steps keep going after a
 # failure; the summary at the end lists PASS/FAIL/SKIP per step.
 #
-# Settings: FUZZTIME, BROKER_SYMBOL (BTCUSD: trades 24/7, so the live check never
-# hits a closed market; XAUUSD for gold hours), FIND_BROKER (broker directory
-# search term, e.g. FTMO), POSITIONING_SOURCE (replay | api), E2E_TIMEOUT (600),
+# Settings: MT5_SERVERS_DAT (host path to a servers.dat that knows the broker:
+# a desktop MT5's File > Open Data Folder > config/servers.dat; not needed when
+# MT5_SERVER is address:port), FUZZTIME, BROKER_SYMBOL (BTCUSD: trades 24/7, so
+# the live check never hits a closed market; XAUUSD for gold hours),
+# POSITIONING_SOURCE (replay | api), E2E_TIMEOUT (600), LIVE_BUDGET (120: e2e-live
+# fails unless the first live tick arrives within this many seconds of the
+# terminal container starting, before and after the restart),
 # plus e2e.sh's E2E_CA_CERT, HTTPS_PROXY, BASE_IMAGE, GO_IMAGE.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -43,9 +47,9 @@ if [ -f "$E2E_ENV" ]; then
 fi
 FUZZTIME="${FUZZTIME:-20s}"
 BROKER_SYMBOL="${BROKER_SYMBOL:-BTCUSD}"
-FIND_BROKER="${FIND_BROKER:-}"
 POSITIONING_SOURCE="${POSITIONING_SOURCE:-replay}"
 E2E_TIMEOUT="${E2E_TIMEOUT:-600}"
+LIVE_BUDGET="${LIVE_BUDGET:-120}"
 
 # A noexec /tmp breaks `go test`; see scripts/gotmpdir.sh.
 GOTMPDIR="$(bash scripts/gotmpdir.sh)"
@@ -105,7 +109,7 @@ s_env() {
   echo "go work dir (GOTMPDIR): ${GOTMPDIR:-Go default}"
   echo "disk: $(df -h . | tail -1)"
   echo "env file: $E2E_ENV $([ -f "$E2E_ENV" ] && echo present || echo absent)"
-  for v in MT5_LOGIN MT5_SERVER BROKER_SYMBOL FIND_BROKER POSITIONING_SOURCE FUZZTIME HTTPS_PROXY BASE_IMAGE GO_IMAGE E2E_CA_CERT; do
+  for v in MT5_LOGIN MT5_SERVER MT5_SERVERS_DAT BROKER_SYMBOL POSITIONING_SOURCE FUZZTIME HTTPS_PROXY BASE_IMAGE GO_IMAGE E2E_CA_CERT; do
     echo "  $v=${!v:-<unset>}"
   done
   for v in MT5_PASSWORD MYFXBOOK_EMAIL MYFXBOOK_PASSWORD; do
@@ -139,8 +143,9 @@ s_probe_net() {
     head -c 200 "$OUT/probe-body.txt" | tr -d '\r' | sed 's/^/   body: /'; echo
   done
   if have MT5_SERVER; then
-    echo "-- MT5 server '$MT5_SERVER': the terminal resolves it through MetaQuotes' broker directory, not DNS."
-    echo "   Watch the e2e-live step's 'journal: ... Network' lines and find-broker screenshot for the outcome."
+    echo "-- MT5 server '$MT5_SERVER': an address:port is used as is; a name must be listed in the"
+    echo "   terminal's config/servers.dat (MT5_SERVERS_DAT, or mt5-state/servers.dat from an earlier run)."
+    echo "   Watch the e2e-live step's 'journal: ... Network' lines for the outcome."
   fi
   rm -f "$OUT/probe-body.txt"
   return 0
@@ -161,14 +166,22 @@ s_e2e_goldrec() {
 }
 s_e2e_live() {
   have MT5_LOGIN && have MT5_PASSWORD && have MT5_SERVER || { skip "MT5_LOGIN/MT5_PASSWORD/MT5_SERVER not set"; return; }
+  # mt5-state/ keeps the terminal's servers.dat across sessions: after one
+  # successful login (or with MT5_SERVERS_DAT = a desktop MT5's
+  # <data folder>/config/servers.dat) the config login reaches the broker
+  # without any UI step.
   local args=(--require-live --broker-symbol "$BROKER_SYMBOL" --min-ticks 5 --restart --timeout "$E2E_TIMEOUT"
-    --source "$POSITIONING_SOURCE" --out "$OUT/e2e-live")
-  [ -n "$FIND_BROKER" ] && args+=(--find-broker "$FIND_BROKER")
+    --live-budget "${LIVE_BUDGET:-120}" --source "$POSITIONING_SOURCE" --out "$OUT/e2e-live" --state "$ROOT/mt5-state")
+  [ -n "${MT5_SERVERS_DAT:-}" ] && args+=(--servers-dat "$MT5_SERVERS_DAT")
+  echo "-- servers.dat: ${MT5_SERVERS_DAT:-not given}; state dir mt5-state/ $( [ -s "$ROOT/mt5-state/servers.dat" ] && echo "has a saved servers.dat" || echo "is empty")"
   scripts/goldrec-e2e.sh "${args[@]}"
   local rc=$?
+  echo "-- live-login timings (seconds since the container started; budget ${LIVE_BUDGET:-120}s to the first live tick):"
+  cat "$OUT/e2e-live/timings.txt" 2>/dev/null
   echo "-- live price sample:"; grep '"trade_server_connected":true' "$OUT/e2e-live/data/prices.jsonl" 2>/dev/null | head -3
   echo "-- symbol re-subscriptions (selected? quote time = market open? errors = symbol missing?):"
   grep '"kind":"symbol_resync"' "$OUT/e2e-live/data/events.jsonl" 2>/dev/null | tail -5
+  echo "-- servers.dat handling:"; grep 'servers.dat\|MT5_SERVER' "$OUT/e2e-live/container.log" 2>/dev/null | tail -6
   echo "-- visible terminal windows (id title):"; cat "$OUT/e2e-live/windows.txt" 2>/dev/null
   echo "-- container log:"; grep '\[gomql5-mt5\]' "$OUT/e2e-live/container.log" 2>/dev/null | tail -15
   echo "-- terminal journal, last 40 lines (the on-disk journal lags; screenshots are live):"

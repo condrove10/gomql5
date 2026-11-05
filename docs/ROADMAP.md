@@ -43,12 +43,16 @@ Session 4 (2026-11-04):
   runnable examples, and six fuzz targets. The new checks were shown able to
   fail: 7 injected bugs, all caught after strengthening two checks.
 * **Tooling.** Added `Makefile` + `scripts/session.sh` (one-log verification
-  sessions) and `mt5ctl find-broker`.
+  sessions) and `mt5ctl find-broker` (since removed with the account wizard:
+  logins are config-only, see `docs/goldrec.md` §6).
+
+See `docs/ALTERNATIVES.md` for the evaluated headless/config-only options (DLL bridge, file bridge, Wine without X, MCP, `Server=host:port`).
 
 ## Open items, in priority order
 
 0. **goldrec go-live** (needs credentials and a network that reaches the
-   broker; run `make session-live FIND_BROKER=…` and review the bundle): `goldrec -source api -once`
+   broker; put `MT5_SERVERS_DAT` (or an `address:port` `MT5_SERVER`) in `.env`, run
+   `make session-live` and review the bundle): `goldrec -source api -once`
    with Myfxbook credentials; check the field names and the session format;
    then `goldrec-e2e.sh --source api --restart` with a demo account
    (`MT5_*`), expecting `trade_server_connected:true`. Make `e2e.sh` require

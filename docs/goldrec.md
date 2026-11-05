@@ -186,10 +186,14 @@ stock terminal has no `FTMO-Demo` entry, and the in-terminal broker search
 for "FTMO" did not return from the sandbox. Result: no live XAUUSD ticks.
 `scripts/goldrec-e2e.sh --require-live` correctly fails in that state.
 
-Re-run on a machine with normal network access:
+Cause, found later: a config login only resolves a server *name* that the
+terminal's `config/servers.dat` lists, and the stock file lists MetaQuotes
+servers only. The fix is a `servers.dat` that knows the broker (or an
+`address:port` server), see §6. Re-run on a machine with normal network
+access:
 
 ```bash
-make session-live FIND_BROKER=FTMO
+make session-live
 ```
 
 ## 6. What it takes to go live
@@ -198,14 +202,27 @@ make session-live FIND_BROKER=FTMO
    `attempts.jsonl` and the raw body. Confirm the field names and the session
    format, and record what you find here.
 2. **A broker account.** Even a demo account works, at a broker whose gold
-   symbol you choose. Put `MT5_*` in `.env`, then run:
+   symbol you choose. Put `MT5_LOGIN`, `MT5_PASSWORD` and `MT5_SERVER` in
+   `.env`. The login is config-only (no UI automation), so the terminal must
+   be able to resolve `MT5_SERVER`:
+   * a **name** (`FTMO-Demo`) has to be listed in `config/servers.dat`. Copy
+     that file from a desktop MT5 that has logged in to the broker once
+     (*File → Open Data Folder* → `config/servers.dat`) and add
+     `MT5_SERVERS_DAT=/path/to/servers.dat` to `.env`;
+   * or set `MT5_SERVER=address:port` and skip `servers.dat`.
+
+   `mt5-state/` keeps the terminal's own copy of `servers.dat` between
+   sessions, so after one successful login the config alone is enough. Then
+   run:
 
    ```bash
-   make session-live FIND_BROKER=<broker name>
+   make session-live
    ```
 
    This runs `goldrec-e2e.sh --require-live`, which passes only on
-   `trade_server_connected:true` ticks.
+   `trade_server_connected:true` ticks. It fails at once, naming the fix,
+   when the journal shows a fallback to MetaQuotes-Demo or `authorization on
+   <MT5_SERVER> failed`.
 3. **A host** with stable egress, because the docs say sessions are bound to
    the login IP. Run goldrec under a supervisor, then do a 24 h observation
    run plus a restart/outage exercise.

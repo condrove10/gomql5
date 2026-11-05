@@ -4,7 +4,8 @@
 # Evidence (logs, screenshots) is always collected, pass or fail.
 #
 # Usage: scripts/e2e.sh [options]
-#   --build          build gomql5/mt5:local first (else it must exist)
+#   --build          build the image ($E2E_IMAGE, default gomql5/mt5:local) first
+#                    (else it must exist)
 #   --image-only     with --build: build the image and exit (no test run)
 #   --compose        run docker-compose.yml (service name "app") instead of host networking
 #   --keep           leave the terminal running afterwards (inspect with scripts/mt5ctl.sh)
@@ -18,6 +19,9 @@
 #   E2E_CA_CERT=path  CA bundle passed as the ca_cert build secret
 #   HTTPS_PROXY/HTTP_PROXY  passed as build args, and builds use --network host
 #   BASE_IMAGE, GO_IMAGE    base image overrides (e.g. mirror.gcr.io/library/...)
+#
+# E2E_IMAGE=tag (default gomql5/mt5:local): image to build (--build) and run
+#   (host mode; --compose runs the image named in docker-compose.yml).
 #
 # Exit 0 = tick received; 1 = failure (reason printed, evidence in --out).
 set -euo pipefail
@@ -45,7 +49,7 @@ TS=$(date +%Y%m%d-%H%M%S)
 OUT="${OUT:-e2e-out/$TS}"
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
-IMAGE=gomql5/mt5:local
+IMAGE=${E2E_IMAGE:-gomql5/mt5:local}
 PROJECT=gomql5e2e
 NAME=gomql5-e2e-$TS
 APP_PID=""

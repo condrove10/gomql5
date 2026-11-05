@@ -4,7 +4,13 @@
 # Required:  GOBRIDGE_TOKEN          shared secret (= mt5.Config.Token on the Go side)
 # Optional:  GOBRIDGE_HOST           Go server host            (default host.docker.internal)
 #            GOBRIDGE_PORT           Go server port            (default 7788)
-#            MT5_LOGIN/MT5_PASSWORD/MT5_SERVER  broker account (else: accounts saved in the volume)
+#            MT5_LOGIN/MT5_PASSWORD/MT5_SERVER  broker account (else: accounts saved in the volume).
+#                                    MT5_SERVER is a name listed in config/servers.dat
+#                                    (see MT5_SERVERS_DAT) or "address:port".
+#            MT5_SERVERS_DAT         servers.dat to install before start (a desktop MT5's
+#                                    <data folder>/config/servers.dat that knows the broker)
+#            GOMQL5_STATE_DIR        writable dir: servers.dat is installed from it when
+#                                    present and saved back to it while running and at stop
 #            MT5_SYMBOL/MT5_PERIOD   chart the EA is attached to (default EURUSD / M1)
 #            VNC_PASSWORD            if set, x11vnc serves the virtual screen on :5900
 #            GOBRIDGE_AUTO_ALLOW     1 (default) = add GOBRIDGE_HOST to the terminal's allowed-URL
@@ -53,7 +59,7 @@ if [ -n "${VNC_PASSWORD:-}" ]; then
 fi
 
 # 1. Install and compile the EA from the image (always matches the Go module).
-mkdir -p "$MT5_DIR/MQL5/Experts/GoBridge" "$MT5_DIR/MQL5/Include/GoBridge" "$MT5_DIR/MQL5/Presets" "$MT5_DIR/config"
+mkdir -p "$MT5_DIR/MQL5/Experts/GoBridge" "$MT5_DIR/MQL5/Include/GoBridge" "$MT5_DIR/MQL5/Presets"
 cp /opt/gobridge/mql5/Experts/GoBridge/*.mq5 "$MT5_DIR/MQL5/Experts/GoBridge/"
 cp /opt/gobridge/mql5/Include/GoBridge/*.mqh "$MT5_DIR/MQL5/Include/GoBridge/"
 EX5="$MT5_DIR/MQL5/Experts/GoBridge/GoBridge.ex5"
@@ -128,6 +134,23 @@ if [ "${GOBRIDGE_AUTO_ALLOW:-1}" = "1" ]; then
   auto_allow &
 fi
 
+# Trade-server list: an explicit file wins, else the state dir's saved copy.
+SERVERS_DAT="$(mt5_config_dir "$MT5_DIR")/servers.dat"
+log "terminal config folder: $(dirname "$SERVERS_DAT")"
+if [ -n "${MT5_SERVERS_DAT:-}" ]; then
+  log "$(servers_dat_install "$MT5_SERVERS_DAT" "$SERVERS_DAT" 2>&1)"
+elif [ -n "${GOMQL5_STATE_DIR:-}" ] && [ -s "$GOMQL5_STATE_DIR/servers.dat" ]; then
+  log "$(servers_dat_install "$GOMQL5_STATE_DIR/servers.dat" "$SERVERS_DAT" 2>&1)"
+fi
+if [ -n "${MT5_SERVER:-}" ]; then
+  if [[ "$MT5_SERVER" == *:* ]]; then log "MT5_SERVER is an address ($MT5_SERVER): no servers.dat entry needed"
+  else log "MT5_SERVER=$MT5_SERVER is a name: it must be listed in servers.dat (else the terminal falls back to MetaQuotes-Demo)"; fi
+fi
+if [ -n "${GOMQL5_STATE_DIR:-}" ]; then
+  mkdir -p "$GOMQL5_STATE_DIR"
+  ( while sleep 30; do servers_dat_save "$SERVERS_DAT" "$GOMQL5_STATE_DIR" | sed 's/^/[gomql5-mt5] /'; done ) &
+fi
+
 log "starting terminal; EA connects to $EA_HOST:$GOBRIDGE_PORT"
 cd "$MT5_DIR"
 wine terminal64.exe /portable '/config:C:\gobridge\gobridge.ini' &
@@ -145,6 +168,8 @@ graceful_stop() {
     sleep 1
   done
   wineserver -k 2>/dev/null || true
+  # The terminal rewrites servers.dat on a clean exit: keep the final copy.
+  [ -n "${GOMQL5_STATE_DIR:-}" ] && log "$(servers_dat_save "$SERVERS_DAT" "$GOMQL5_STATE_DIR" || true)"
   exit 0
 }
 trap graceful_stop TERM INT

@@ -10,24 +10,6 @@
 #   docker build --secret id=ca_cert,src=/path/ca.crt ...
 # If Docker Hub rate-limits you: --build-arg BASE_IMAGE=mirror.gcr.io/library/debian:trixie-slim
 ARG BASE_IMAGE=debian:trixie-slim
-
-# wincombo.exe: reads/selects Win32 combo-box entries through window messages
-# (docker/mt5/tools/wincombo.c), so the account wizard's server can be picked
-# by name. Built here with mingw-w64; only the .exe goes into the image.
-FROM ${BASE_IMAGE} AS wintools
-RUN --mount=type=secret,id=ca_cert,required=false \
-    set -eux; \
-    if [ -f /run/secrets/ca_cert ]; then \
-      sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources; \
-      install -m 0644 /run/secrets/ca_cert /tmp/build-ca.crt; \
-      echo 'Acquire::https::CAInfo "/tmp/build-ca.crt";' > /etc/apt/apt.conf.d/99build-ca; \
-    fi; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates gcc-mingw-w64-x86-64-posix; \
-    rm -rf /var/lib/apt/lists/*
-COPY docker/mt5/tools/wincombo.c /src/
-RUN x86_64-w64-mingw32-gcc -O2 -Wall -Werror -o /src/wincombo.exe /src/wincombo.c -luser32
-
 FROM ${BASE_IMAGE}
 
 ARG WINE_BRANCH=staging
@@ -57,14 +39,20 @@ RUN --mount=type=secret,id=ca_cert,required=false \
     curl -fsSL -o /etc/apt/sources.list.d/winehq-trixie.sources \
       https://dl.winehq.org/wine-builds/debian/dists/trixie/winehq-trixie.sources; \
     apt-get update; \
-    apt-get install -y --install-recommends winehq-${WINE_BRANCH}; \
+    # No Recommends (they pull GTK, Vulkan/VA drivers, CUPS, SDL, ~0.5 GB):
+    # only the ones Wine needs here, for TLS, fonts and X11 (64- and 32-bit).
+    apt-get install -y --no-install-recommends winehq-${WINE_BRANCH} \
+      libgnutls30t64 libfreetype6 libfontconfig1 libdbus-1-3 \
+      libxcomposite1 libxcursor1 libxfixes3 libxi6 libxinerama1 libxrandr2 libxrender1 libxxf86vm1 \
+      libgnutls30t64:i386 libfreetype6:i386 libfontconfig1:i386 \
+      libxcomposite1:i386 libxcursor1:i386 libxfixes3:i386 libxi6:i386 libxinerama1:i386 \
+      libxrandr2:i386 libxrender1:i386 libxxf86vm1:i386; \
     rm -rf /var/lib/apt/lists/* /etc/apt/apt.conf.d/99build-ca /tmp/build-ca.crt; \
     wine --version
 
 COPY docker/mt5/install-mt5.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/install-mt5.sh && install-mt5.sh
 COPY docker/mt5/lib.sh /usr/local/lib/gomql5/lib.sh
-COPY --from=wintools /src/wincombo.exe /usr/local/lib/gomql5/wincombo.exe
 COPY docker/mt5/entrypoint.sh docker/mt5/allow-host.sh /usr/local/bin/
 # Drop the optional build-time proxy CA from the final filesystem.
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/allow-host.sh && \
