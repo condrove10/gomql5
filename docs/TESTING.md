@@ -57,6 +57,17 @@ bundle.
 
 * `make e2e-live` needs `MT5_*` and fails unless live ticks arrive
   (`trade_server_connected:true`).
+* **2-minute live budget.** The first live tick must be recorded within
+  `LIVE_BUDGET` seconds (default 120; `goldrec-e2e.sh --live-budget S`) of
+  the terminal container starting, and again after the restart (a fresh
+  container, timed from its own start). Otherwise it fails with the elapsed
+  seconds and the phase reached: container started → EA connected
+  (`terminal_connected`) → trade server connected (latest `terminal_info`)
+  → first live tick. Each run prints, and writes to `timings.txt`, e.g.
+  `start: ea_connected=41s trade_server=58s first_live_tick=63s (budget
+  120s)`. The rest of `--min-ticks` may take longer, up to `--timeout` from
+  the container start. `docker/mt5/test/goldrec_e2e_budget_test.sh` tests
+  this logic without Docker.
 * The login is config-only. `MT5_SERVER` must be `address:port` or a name
   listed in `config/servers.dat`: set `MT5_SERVERS_DAT` to a desktop MT5's
   copy (*File → Open Data Folder* → `config/servers.dat`). `mt5-state/`

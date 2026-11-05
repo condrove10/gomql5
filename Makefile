@@ -19,7 +19,8 @@ FUZZTIME ?= 20s
 BROKER_SYMBOL ?= BTCUSD
 POSITIONING_SOURCE ?= replay
 E2E_TIMEOUT ?= 600
-export FUZZTIME BROKER_SYMBOL POSITIONING_SOURCE E2E_TIMEOUT
+LIVE_BUDGET ?= 120
+export FUZZTIME BROKER_SYMBOL POSITIONING_SOURCE E2E_TIMEOUT LIVE_BUDGET
 
 # A noexec /tmp breaks `go test` ("fork/exec …: permission denied"): Go runs
 # test binaries from its work dir. scripts/gotmpdir.sh picks a usable one.
@@ -36,7 +37,7 @@ help: ## list targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  make %-14s %s\n", $$1, $$2}'
 	@echo
 	@echo "  Tunables: FUZZTIME=$(FUZZTIME) BROKER_SYMBOL=$(BROKER_SYMBOL)"
-	@echo "            POSITIONING_SOURCE=$(POSITIONING_SOURCE) E2E_TIMEOUT=$(E2E_TIMEOUT) E2E_ENV=.env"
+	@echo "            POSITIONING_SOURCE=$(POSITIONING_SOURCE) E2E_TIMEOUT=$(E2E_TIMEOUT) LIVE_BUDGET=$(LIVE_BUDGET) E2E_ENV=.env"
 
 ## --- full sessions -----------------------------------------------------------
 session: ## ALL steps: env, check, shell, fuzz, image, probes, e2e, e2e-goldrec, e2e-live -> one log + bundle
@@ -74,7 +75,7 @@ e2e: ## bridge smoke test against the real terminal (scripts/e2e.sh)
 e2e-goldrec: ## recorder pipeline against the real terminal, with a restart (no account needed)
 	$(SESSION) e2e-goldrec
 
-e2e-live: ## recorder with a broker account: requires live ticks (MT5_* set; MT5_SERVERS_DAT for a named server)
+e2e-live: ## recorder with a broker account: first live tick within LIVE_BUDGET s of container start (MT5_* set)
 	$(SESSION) env e2e-live
 
 ## --- plain developer targets (no session log) -----------------------------------

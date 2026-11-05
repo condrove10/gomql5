@@ -1,6 +1,7 @@
 #!/bin/bash
-# Tests goldrec-e2e.sh's config-login fail-fast (login_failure + ensure_live)
-# against terminal journals:
+# Tests goldrec-e2e.sh's config-login failure detection (login_failure)
+# against terminal journals (ensure_live, which acts on it, is covered by
+# goldrec_e2e_budget_test.sh):
 #   * testdata/journal-ftmo-wizard.txt: a real FTMO run (2026-11-04, login
 #     replaced). Its config login to FTMO-Demo fell back to MetaQuotes-Demo
 #     ("authorization on MetaQuotes-Demo failed"), then the (since removed)
@@ -11,8 +12,8 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 script="$here/../../../scripts/goldrec-e2e.sh"
 wizard="$here/testdata/journal-ftmo-wizard.txt"
-defs=$(sed -n '/^SERVERS_DAT_HINT=/p; /^login_failure() {/,/^}/p; /^ensure_live() {/,/^}/p' "$script")
-[[ "$defs" == *"login_failure()"* && "$defs" == *"ensure_live()"* ]] || { echo "FAIL: functions not found"; exit 1; }
+defs=$(sed -n '/^SERVERS_DAT_HINT=/p; /^login_failure() {/,/^}/p' "$script")
+[[ "$defs" == *"login_failure()"* ]] || { echo "FAIL: functions not found"; exit 1; }
 fail=0
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
@@ -27,27 +28,6 @@ grep -v MetaQuotes-Demo "$wizard" >"$T/rejected.txt" # FTMO-Server4..2 reject, n
 
 # lf SERVER JOURNAL: login_failure's message and status, under set -euo pipefail.
 lf() { bash -c 'set -euo pipefail; eval "$1"; login_failure "$2" <"$3" && echo "status=0" || echo "status=1"' _ "$defs" "$1" "$2" 2>&1; }
-# live SERVER JOURNAL CONNECT_AFTER: ensure_live with a fake terminal that
-# reports a trade-server connection from poll CONNECT_AFTER on (0 = never).
-live() {
-  bash -c '
-    set -euo pipefail
-    eval "$1"
-    MT5_LOGIN=12345678 MT5_PASSWORD=x MT5_SERVER=$2 J=$3 AFTER=$4 NAME=c SYM=XAUUSD POLLS=$(mktemp)
-    say() { echo "$*"; }
-    show_network() { :; }
-    scripts/mt5ctl.sh() { cat "$J"; } # -c NAME logs terminal N
-    trade_connected() { [ "$AFTER" -gt 0 ] && [ "$(wc -l <"$POLLS")" -ge "$AFTER" ]; }
-    have_live_ticks() { :; }
-    wait_for() { # like the real one, minus sleeps: poll up to 5 times
-      local desc=$1 i; shift
-      for i in 1 2 3 4 5; do echo >>"$POLLS"; "$@" && { echo "waited for $desc"; return 0; }; done
-      echo "timed out waiting for $desc"; exit 1
-    }
-    ensure_live 1
-  ' _ "$defs" "$1" "$2" "$3" 2>&1
-  echo "exit=$?"
-}
 has() { # name, output, substring
   if [[ "$2" == *"$3"* ]]; then echo "ok   $1"; else echo "FAIL $1: no '$3' in: $(echo "$2" | tr '\n' '|')"; fail=1; fi
 }
@@ -80,19 +60,4 @@ hasnt "successful login: silent" "$out" "rejected"
 out=$(lf FTMO-Demo /dev/null)
 has "empty journal: no failure" "$out" "status=1"
 
-out=$(live FTMO-Demo "$wizard" 0)
-has "ensure_live, unknown server: fails fast" "$out" "FAIL: the terminal does not know MT5_SERVER=FTMO-Demo"
-has "ensure_live, unknown server: non-zero exit" "$out" "exit=1"
-hasnt "ensure_live, unknown server: no timeout" "$out" "timed out"
-
-out=$(live FTMO-Demo "$T/success.txt" 3)
-has "ensure_live, success: connected" "$out" "trade server connected"
-has "ensure_live, success: then waits for live ticks" "$out" "waited for 1 live XAUUSD ticks"
-has "ensure_live, success: exit 0" "$out" "exit=0"
-
-out=$(live FTMO-Demo "$T/success.txt" 0)
-has "ensure_live, no connection and no failure: times out" "$out" "timed out waiting for trade-server connection"
-
-out=$(live FTMO-Demo "$wizard" 1)
-has "ensure_live: a trade-server connection wins over an old failure" "$out" "trade server connected"
 exit $fail

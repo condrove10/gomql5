@@ -12,11 +12,16 @@
 #   --interval D        positioning interval (default 15s)
 #   --min-ticks N       (default 3)
 #   --restart           also restart the terminal and require ticks after reconnect
-#   --timeout S         seconds per wait (default 300)
+#   --timeout S         seconds per wait (default 300); with --require-live also the cap,
+#                       counted from the container start, on reaching MIN_TICKS live ticks
 #   --port P            (default 7789)
 #   --require-live      fail unless ticks arrive with trade_server_connected=true
 #                       (needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER); fails at once when
 #                       the journal shows the login cannot work (see login_failure)
+#   --live-budget S     with --require-live: the first live tick must arrive within S
+#                       seconds of the terminal container starting (default 120), else
+#                       FAIL naming the phase reached; applies again after --restart.
+#                       Phase timings go to the output and to OUT/timings.txt
 #   --servers-dat FILE  install FILE as the terminal's config/servers.dat (a desktop MT5's
 #                       copy that knows the broker): a config login to a named server
 #                       (MT5_SERVER=FTMO-Demo) then works without any UI
@@ -37,7 +42,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SYM=XAUUSD SOURCE=replay INTERVAL=15s MIN_TICKS=3 RESTART=0 TIMEOUT=300 PORT=7789 KEEP=0 OUT=""
-LIVE=0 SERVERS_DAT="" STATE_DIR=""
+LIVE=0 SERVERS_DAT="" STATE_DIR="" LIVE_BUDGET=120 POLL=3
 while [ $# -gt 0 ]; do
   case $1 in
     --broker-symbol) SYM=$2; shift ;;
@@ -49,6 +54,7 @@ while [ $# -gt 0 ]; do
     --port) PORT=$2; shift ;;
     --keep) KEEP=1 ;;
     --require-live) LIVE=1 ;;
+    --live-budget) LIVE_BUDGET=$2; shift ;;
     --servers-dat) SERVERS_DAT=$2; shift ;;
     --state) STATE_DIR=$2; shift ;;
     --out) OUT=$2; shift ;;
@@ -64,6 +70,7 @@ OUT=$(cd "$OUT" && pwd)
 DATA=$OUT/data
 IMAGE=gomql5/mt5:local NAME=gomql5-goldrec-$TS TOKEN=goldrec-e2e APP_PID=""
 say() { echo "[goldrec-e2e] $*"; }
+now() { echo "$SECONDS"; } # the clock every wait reads
 lines() { [ -f "$1" ] && wc -l <"$1" || echo 0; }
 
 docker image inspect "$IMAGE" >/dev/null 2>&1 || { say "FAIL: $IMAGE missing (scripts/e2e.sh --build)"; exit 1; }
@@ -85,6 +92,7 @@ start_terminal() {
   fi
   docker run -d --rm --name "$NAME" --network host --shm-size 512m "${acct[@]}" \
     -e GOBRIDGE_TOKEN=$TOKEN -e GOBRIDGE_HOST=127.0.0.1 -e GOBRIDGE_PORT="$PORT" "$IMAGE" >/dev/null
+  mark_started
 }
 collect() {
   docker logs "$NAME" >"$OUT/container.log" 2>&1 || true
@@ -106,23 +114,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# wait_for COND_DESC TEST_CMD
-wait_for() {
-  local desc=$1; shift
-  local deadline=$((SECONDS + TIMEOUT))
-  while [ $SECONDS -lt $deadline ]; do
+# fatal: print why the run cannot pass any more and return 0, else return 1.
+fatal() {
+  if ! kill -0 "$APP_PID" 2>/dev/null; then echo "goldrec exited:"; tail -20 "$OUT/goldrec.log"; return 0; fi
+  if grep -q 'broker symbol unavailable' "$OUT/goldrec.log"; then
+    echo "broker symbol $SYM unavailable: $(grep -m1 'broker symbol unavailable' "$OUT/goldrec.log")"; return 0
+  fi
+  if docker logs "$NAME" 2>&1 | grep -qE 'compilation failed|cannot resolve'; then
+    echo "container: $(docker logs "$NAME" 2>&1 | grep -E 'compilation failed|cannot resolve' | head -1)"; return 0
+  fi
+  return 1
+}
+# wait_until DEADLINE COND_DESC TEST_CMD...: poll until TEST_CMD passes (it is
+# tried at least once); FAIL on a fatal condition or once now() reaches DEADLINE.
+wait_until() {
+  local deadline=$1 desc=$2 why; shift 2
+  while :; do
     if "$@"; then return 0; fi
-    if ! kill -0 "$APP_PID" 2>/dev/null; then say "FAIL: goldrec exited"; tail -20 "$OUT/goldrec.log"; exit 1; fi
-    if grep -q 'broker symbol unavailable' "$OUT/goldrec.log"; then
-      say "FAIL: broker symbol $SYM unavailable: $(grep -m1 'broker symbol unavailable' "$OUT/goldrec.log")"; exit 1
-    fi
-    if docker logs "$NAME" 2>&1 | grep -qE 'compilation failed|cannot resolve'; then
-      say "FAIL: container: $(docker logs "$NAME" 2>&1 | grep -E 'compilation failed|cannot resolve' | head -1)"; exit 1
-    fi
-    sleep 3
+    [ "$(now)" -lt "$deadline" ] || break
+    if why=$(fatal); then say "FAIL: $why"; exit 1; fi
+    sleep "$POLL"
   done
   say "FAIL: timed out waiting for $desc"; exit 1
 }
+# wait_for COND_DESC TEST_CMD...: wait_until, TIMEOUT seconds from now.
+wait_for() { local desc=$1; shift; wait_until $(($(now) + TIMEOUT)) "$desc" "$@"; }
 have_ticks() { [ "$(lines "$DATA/prices.jsonl")" -ge "$1" ]; }
 have_obs() { [ "$(lines "$DATA/sentiment.jsonl")" -ge 2 ]; }
 # count PATTERN FILE: matching lines, 0 when none or no file. (Not
@@ -143,8 +159,27 @@ show_network() {
   if [ "$n" -gt "$SEEN_NET" ]; then printf '%s\n' "$all" | tail -n $((n - SEEN_NET)) | sed 's/^/[goldrec-e2e] journal: /'; SEEN_NET=$n; fi
 }
 
-say "goldrec on 127.0.0.1:$PORT (source=$SOURCE, broker symbol $SYM); terminal $NAME"
-start_terminal
+# Live-login phase timings, in seconds since the terminal container started
+# (mark_started, called by start_terminal); empty = phase not reached.
+T0=$(now) T_EA="" T_TRADE="" T_TICK="" RUN_LABEL=start
+mark_started() { T0=$(now) T_EA="" T_TRADE="" T_TICK=""; }
+# phase: the last phase reached, in order.
+phase() {
+  if [ -n "$T_TICK" ]; then echo "first live tick"
+  elif [ -n "$T_TRADE" ]; then echo "trade server connected"
+  elif [ -n "$T_EA" ]; then echo "EA connected"
+  else echo "container started"; fi
+}
+secs() { if [ -n "$1" ]; then echo "${1}s"; else echo never; fi; }
+timings_line() {
+  echo "ea_connected=$(secs "$T_EA") trade_server=$(secs "$T_TRADE") first_live_tick=$(secs "$T_TICK") (budget ${LIVE_BUDGET}s)"
+}
+# record_timings: print this run's timings and append them to OUT/timings.txt.
+record_timings() {
+  say "timings ($RUN_LABEL): $(timings_line)"
+  echo "$RUN_LABEL: $(timings_line)" >>"$OUT/timings.txt"
+}
+live_fail() { say "FAIL: $*"; record_timings; exit 1; }
 # login_failure SERVER (stdin = terminal journal): print why a config login to
 # SERVER cannot succeed and return 0, or return 1 when the journal shows no such
 # sign (yet). Two shapes, both from real runs (testdata/journal-ftmo-wizard.txt):
@@ -165,27 +200,51 @@ login_failure() {
   fi
   return 1
 }
-# ensure_live LIVE_TICKS_NEEDED: wait for the config login to reach the trade
-# server, failing at once when the journal shows it cannot; then wait for live ticks.
+# ensure_live CONNS LIVE_BEFORE LIVE_NEEDED: the live-login check for the
+# container started last. Within LIVE_BUDGET seconds of its start: the EA
+# connects (CONNS terminal_connected events), the latest terminal_info says
+# trade server connected, and a live tick arrives (more than LIVE_BEFORE in
+# prices.jsonl); a journal showing the login cannot work fails at once. Then
+# up to LIVE_NEEDED live ticks in all, by TIMEOUT seconds after the start.
 ensure_live() {
-  local need=$1
+  local conns=$1 before=$2 need=$3 el why rem
   [ -n "${MT5_LOGIN:-}" ] && [ -n "${MT5_PASSWORD:-}" ] || { say "FAIL: --require-live needs MT5_LOGIN/MT5_PASSWORD/MT5_SERVER"; exit 1; }
-  live_or_fail() {
-    local why
-    show_network
-    trade_connected && return 0
-    if why=$(scripts/mt5ctl.sh -c "$NAME" logs terminal 5000 2>/dev/null | login_failure "${MT5_SERVER:-}"); then
-      say "FAIL: $why"; exit 1
+  while :; do
+    show_network # (slow: it reads the journal; so is the login_failure check below)
+    el=$(($(now) - T0))
+    if [ -z "$T_EA" ] && connects "$conns"; then T_EA=$el; say "EA connected (${el}s)"; fi
+    if [ -n "$T_EA" ]; then
+      # Only after this container's EA connected: an earlier terminal_info or
+      # live tick belongs to the previous container.
+      if [ -z "$T_TRADE" ] && trade_connected; then T_TRADE=$el; say "trade server connected (${el}s)"; fi
+      # A tick first seen after the budget (a slow poll) is too late.
+      if [ "$el" -le "$LIVE_BUDGET" ] && have_live_ticks $((before + 1)); then
+        T_TICK=$el T_TRADE=${T_TRADE:-$el}; say "first live $SYM tick (${el}s)"; break
+      fi
     fi
-    return 1
-  }
-  wait_for "trade-server connection (account $MT5_LOGIN on ${MT5_SERVER:-?})" live_or_fail
-  say "trade server connected"
-  wait_for "$need live $SYM ticks" have_live_ticks "$need"
+    if [ -z "$T_TRADE" ] && why=$(scripts/mt5ctl.sh -c "$NAME" logs terminal 5000 2>/dev/null | login_failure "${MT5_SERVER:-}"); then
+      live_fail "$why (${el}s since the container started; phase: $(phase))"
+    fi
+    if why=$(fatal); then live_fail "$why"; fi
+    el=$(($(now) - T0))
+    if [ "$el" -ge "$LIVE_BUDGET" ]; then
+      live_fail "no live $SYM tick within the ${LIVE_BUDGET}s live budget (account $MT5_LOGIN on ${MT5_SERVER:-?}): ${el}s since the container started; phase: $(phase)"
+    fi
+    # Nap at most until the budget, so the last poll lands on it (the polls
+    # themselves take time: count from the clock, not from el).
+    rem=$((LIVE_BUDGET - ($(now) - T0)))
+    if [ "$rem" -gt 0 ]; then sleep $((rem < POLL ? rem : POLL)); fi
+  done
+  record_timings
+  [ "$need" -gt 1 ] || return 0
+  wait_until $((T0 + TIMEOUT)) "$need live $SYM ticks (${TIMEOUT}s after the container start)" have_live_ticks $((before + need))
 }
+
+say "goldrec on 127.0.0.1:$PORT (source=$SOURCE, broker symbol $SYM); terminal $NAME"
+: >"$OUT/timings.txt"
+start_terminal
 if [ $LIVE = 1 ]; then
-  wait_for "EA connection" connects 1
-  ensure_live "$MIN_TICKS"
+  ensure_live 1 0 "$MIN_TICKS"
 fi
 wait_for "$MIN_TICKS $SYM ticks" have_ticks "$MIN_TICKS"
 wait_for "2 positioning observations" have_obs
@@ -198,10 +257,12 @@ if [ $RESTART = 1 ]; then
   wait_for "disconnect event" grep -q '"kind":"terminal_disconnected"' "$DATA/events.jsonl"
   gone() { ! docker inspect "$NAME" >/dev/null 2>&1; }
   wait_for "old container removed" gone
-  start_terminal
-  wait_for "reconnect" connects $((before_conn + 1))
+  RUN_LABEL=restart
+  start_terminal # a fresh container starts logged out again: the budget starts over
   if [ $LIVE = 1 ]; then
-    ensure_live $((before_live + 1)) # a fresh container starts logged out again
+    ensure_live $((before_conn + 1)) "$before_live" 1
+  else
+    wait_for "reconnect" connects $((before_conn + 1))
   fi
   wait_for "ticks after reconnect" have_ticks $((before + 1))
 fi
@@ -210,6 +271,7 @@ say "PASS: $(lines "$DATA/prices.jsonl") ticks, $(lines "$DATA/sentiment.jsonl")
 if grep -q '"trade_server_connected":false' "$DATA/prices.jsonl"; then
   say "      NOTE: terminal had no trade-server connection: ticks are cached quotes, not live prices"
 fi
+[ -s "$OUT/timings.txt" ] && sed 's/^/[goldrec-e2e]       timings /' "$OUT/timings.txt"
 say "      first tick: $(head -1 "$DATA/prices.jsonl")"
 say "      last observation: $(tail -1 "$DATA/sentiment.jsonl" | cut -c1-400)"
 say "      evidence: $OUT (goldrec.log, data/, terminal.log, screen.png, journal.png, experts-log.png)"

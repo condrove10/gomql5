@@ -388,7 +388,7 @@ make help
 | `make probe` | network probes + one Myfxbook API round (if credentials are set) |
 | `make e2e` | bridge smoke test against the real terminal |
 | `make e2e-goldrec` | recorder pipeline against the real terminal, with a restart (no account needed) |
-| `make e2e-live` | recorder with your broker account: **requires live ticks** (`trade_server_connected:true`) |
+| `make e2e-live` | recorder with your broker account: **requires a live tick** (`trade_server_connected:true`) **within 2 minutes** of the terminal starting (`LIVE_BUDGET`) |
 | `make session` | **everything above, in order, into one log** |
 | `make session-live` | env, image, probes, e2e-live (account-focused) |
 | `make clean`, `make clean-docker` | local outputs; leftover containers and Docker build cache |
@@ -425,6 +425,14 @@ make help
    in from the config alone, even without `MT5_SERVERS_DAT`. If the journal
    shows the fallback to MetaQuotes-Demo, or `authorization on <MT5_SERVER>
    failed`, the live check stops at once and says which of these to fix.
+
+   The live check has a **2-minute budget** (`LIVE_BUDGET=120`): from the
+   terminal container's start to the first live tick, once at the start and
+   again after the restart. A slower login fails, naming the elapsed time
+   and the phase it reached (container started, EA connected, trade server
+   connected, first live tick). The phase timings are printed and saved in
+   `e2e-live/timings.txt`, e.g. `start: ea_connected=41s trade_server=58s
+   first_live_tick=63s (budget 120s)`.
 
 2. Run it. The build takes about 7 GB of disk and network access to
    MetaQuotes.
