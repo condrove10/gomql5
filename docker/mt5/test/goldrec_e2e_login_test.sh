@@ -60,4 +60,25 @@ hasnt "successful login: silent" "$out" "rejected"
 out=$(lf FTMO-Demo /dev/null)
 has "empty journal: no failure" "$out" "status=1"
 
+# A lone "no connection" line is only a precursor (the fixture's first line), for a name and for address:port
+sed -n 1p "$wizard" >"$T/lone.txt"
+out=$(lf FTMO-Demo "$T/lone.txt")
+has "lone no connection: no failure" "$out" "status=1"
+out=$(lf 34.140.33.92:443 "$T/lone.txt")
+has "lone no connection, address: no failure" "$out" "status=1"
+
+# Address form: MT5_SERVER=address:port. The fallback names the address, and servers.dat is not the fix
+sed -n 2p "$wizard" >"$T/addr-fallback.txt"
+out=$(lf 34.140.33.92:443 "$T/addr-fallback.txt")
+has "address fallback: names the address" "$out" "fell back to MetaQuotes-Demo for MT5_SERVER=34.140.33.92:443"
+has "address fallback: detected" "$out" "status=0"
+hasnt "address fallback: no servers.dat hint" "$out" "servers.dat"
+
+printf '%s\t2\t%s\tNetwork\t%s\n' \
+  AR 22:21:07.130 "'12345678': authorization on 34.140.33.92:443 failed (Invalid account)" >"$T/addr-reject.txt"
+out=$(lf 34.140.33.92:443 "$T/addr-reject.txt")
+has "address rejects the account: says so" "$out" "34.140.33.92:443 rejected the login"
+has "address rejects the account: detected" "$out" "status=0"
+hasnt "address rejects the account: no servers.dat hint" "$out" "servers.dat"
+
 exit $fail

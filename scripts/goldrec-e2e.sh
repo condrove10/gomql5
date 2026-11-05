@@ -327,8 +327,19 @@ show_network() {
 login_failure() {
   local srv=$1 net line
   net=$(grep -E $'\tNetwork\t' || true) # (`|| true`: no match is normal under set -euo pipefail)
+  # address:port (MT5_SERVER given as an address) is not a name in servers.dat, so servers.dat is no fix for it
+  if [[ "$srv" =~ ^[^:]+:[0-9]+$ ]]; then
+    if line=$(printf '%s\n' "$net" | grep -F "authorization on $srv failed" | tail -1) && [ -n "$line" ]; then
+      echo "$srv rejected the login (journal: ${line##*$'\t'}): check MT5_LOGIN/MT5_PASSWORD and the address:port in MT5_SERVER"
+      return 0
+    fi
+  fi
   if [ "$srv" != MetaQuotes-Demo ] && line=$(printf '%s\n' "$net" | grep -E "(authorization on|authorized on) MetaQuotes-Demo( |$)" | tail -1) && [ -n "$line" ]; then
-    echo "the terminal does not know MT5_SERVER=$srv and fell back to MetaQuotes-Demo (journal: ${line##*$'\t'}): $SERVERS_DAT_HINT"
+    if [[ "$srv" =~ ^[^:]+:[0-9]+$ ]]; then
+      echo "the terminal fell back to MetaQuotes-Demo for MT5_SERVER=$srv (journal: ${line##*$'\t'}): check the address:port in MT5_SERVER"
+    else
+      echo "the terminal does not know MT5_SERVER=$srv and fell back to MetaQuotes-Demo (journal: ${line##*$'\t'}): $SERVERS_DAT_HINT"
+    fi
     return 0
   fi
   if [ -n "$srv" ] && line=$(printf '%s\n' "$net" | grep -F "authorization on $srv failed" | tail -1) && [ -n "$line" ]; then
