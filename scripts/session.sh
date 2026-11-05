@@ -26,7 +26,7 @@
 # directory, and session-out/<timestamp>.tar.gz. Steps keep going after a
 # failure; the summary at the end lists PASS/FAIL/SKIP per step.
 #
-# Settings: FUZZTIME, BROKER_SYMBOL (BTCUSD: trades 24/7, so the live check never
+# Settings: MT5_SERVERS_DAT (host path to a servers.dat that knows the broker), FUZZTIME, BROKER_SYMBOL (BTCUSD: trades 24/7, so the live check never
 # hits a closed market; XAUUSD for gold hours), FIND_BROKER (broker directory
 # search term, e.g. FTMO), POSITIONING_SOURCE (replay | api), E2E_TIMEOUT (600),
 # plus e2e.sh's E2E_CA_CERT, HTTPS_PROXY, BASE_IMAGE, GO_IMAGE.
@@ -161,14 +161,21 @@ s_e2e_goldrec() {
 }
 s_e2e_live() {
   have MT5_LOGIN && have MT5_PASSWORD && have MT5_SERVER || { skip "MT5_LOGIN/MT5_PASSWORD/MT5_SERVER not set"; return; }
+  # mt5-state/ keeps the terminal's servers.dat across sessions: after one
+  # successful login (or with MT5_SERVERS_DAT = a desktop MT5's
+  # <data folder>/config/servers.dat) the config login reaches the broker
+  # without any UI step.
   local args=(--require-live --broker-symbol "$BROKER_SYMBOL" --min-ticks 5 --restart --timeout "$E2E_TIMEOUT"
-    --source "$POSITIONING_SOURCE" --out "$OUT/e2e-live")
+    --source "$POSITIONING_SOURCE" --out "$OUT/e2e-live" --state "$ROOT/mt5-state")
+  [ -n "${MT5_SERVERS_DAT:-}" ] && args+=(--servers-dat "$MT5_SERVERS_DAT")
+  echo "-- servers.dat: ${MT5_SERVERS_DAT:-not given}; state dir mt5-state/ $( [ -s "$ROOT/mt5-state/servers.dat" ] && echo "has a saved servers.dat" || echo "is empty")"
   [ -n "$FIND_BROKER" ] && args+=(--find-broker "$FIND_BROKER")
   scripts/goldrec-e2e.sh "${args[@]}"
   local rc=$?
   echo "-- live price sample:"; grep '"trade_server_connected":true' "$OUT/e2e-live/data/prices.jsonl" 2>/dev/null | head -3
   echo "-- symbol re-subscriptions (selected? quote time = market open? errors = symbol missing?):"
   grep '"kind":"symbol_resync"' "$OUT/e2e-live/data/events.jsonl" 2>/dev/null | tail -5
+  echo "-- servers.dat handling:"; grep 'servers.dat\|MT5_SERVER' "$OUT/e2e-live/container.log" 2>/dev/null | tail -6
   echo "-- visible terminal windows (id title):"; cat "$OUT/e2e-live/windows.txt" 2>/dev/null
   echo "-- container log:"; grep '\[gomql5-mt5\]' "$OUT/e2e-live/container.log" 2>/dev/null | tail -15
   echo "-- terminal journal, last 40 lines (the on-disk journal lags; screenshots are live):"

@@ -25,6 +25,12 @@
 #   --connect-timeout S seconds to wait for the configured login (default 90)
 #   --login-tries N     server-list entries to try (default 12; stops early at the end of the list)
 #   --login-wait S      max seconds per try (default 60; moves on as soon as the journal shows the try failed)
+#   --servers-dat FILE  install FILE as the terminal's config/servers.dat (a desktop MT5's
+#                       copy that knows the broker): a config login to a named server
+#                       (MT5_SERVER=FTMO-Demo) then works without any UI
+#   --state DIR         keep the terminal's servers.dat in DIR (installed from it at start
+#                       when present, saved back while running and at stop): after one
+#                       successful login, later runs log in from the config alone
 #   --keep              leave the terminal running
 #   --out DIR           evidence directory (default e2e-out/goldrec-<timestamp>)
 #
@@ -37,7 +43,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SYM=XAUUSD SOURCE=replay INTERVAL=15s MIN_TICKS=3 RESTART=0 TIMEOUT=300 PORT=7789 KEEP=0 OUT=""
-LIVE=0 FIND_BROKER="" CONNECT_TIMEOUT=90 LOGIN_TRIES=12 LOGIN_WAIT=60
+LIVE=0 FIND_BROKER="" CONNECT_TIMEOUT=90 LOGIN_TRIES=12 LOGIN_WAIT=60 SERVERS_DAT="" STATE_DIR=""
 while [ $# -gt 0 ]; do
   case $1 in
     --broker-symbol) SYM=$2; shift ;;
@@ -53,6 +59,8 @@ while [ $# -gt 0 ]; do
     --connect-timeout) CONNECT_TIMEOUT=$2; shift ;;
     --login-tries) LOGIN_TRIES=$2; shift ;;
     --login-wait) LOGIN_WAIT=$2; shift ;;
+    --servers-dat) SERVERS_DAT=$2; shift ;;
+    --state) STATE_DIR=$2; shift ;;
     --out) OUT=$2; shift ;;
     -h | --help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) echo "goldrec-e2e: unknown option $1" >&2; exit 2 ;;
@@ -77,6 +85,14 @@ APP_PID=$!
 start_terminal() {
   local acct=()
   for v in MT5_LOGIN MT5_PASSWORD MT5_SERVER; do [ -n "${!v:-}" ] && acct+=(-e "$v"); done
+  if [ -n "$SERVERS_DAT" ]; then
+    [ -s "$SERVERS_DAT" ] || { say "FAIL: --servers-dat $SERVERS_DAT missing or empty"; exit 1; }
+    acct+=(-v "$(cd "$(dirname "$SERVERS_DAT")" && pwd)/$(basename "$SERVERS_DAT"):/gomql5/servers.dat:ro" -e MT5_SERVERS_DAT=/gomql5/servers.dat)
+  fi
+  if [ -n "$STATE_DIR" ]; then
+    mkdir -p "$STATE_DIR"
+    acct+=(-v "$(cd "$STATE_DIR" && pwd):/gomql5-state" -e GOMQL5_STATE_DIR=/gomql5-state)
+  fi
   docker run -d --rm --name "$NAME" --network host --shm-size 512m "${acct[@]}" \
     -e GOBRIDGE_TOKEN=$TOKEN -e GOBRIDGE_HOST=127.0.0.1 -e GOBRIDGE_PORT="$PORT" "$IMAGE" >/dev/null
 }

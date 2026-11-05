@@ -245,5 +245,36 @@ bridge_connected() {
   awk -v p=":$hex" '$3 ~ p"$" && $4 == "01" { found = 1 } END { exit !found }' "${files[@]}"
 }
 
+# --- trade-server list (config/servers.dat) ----------------------------------
+# A config login (Server=NAME in [Common]) only works when the terminal can
+# resolve NAME: MetaQuotes documents Server as "address and port number of a
+# trade server separated with a colon", and a name resolves only if
+# config/servers.dat already lists it. The stock install lists MetaQuotes
+# servers only, so Server=FTMO-Demo fell back to MetaQuotes-Demo ("Invalid
+# account"). Fix: install a servers.dat that knows the broker (e.g. copied from
+# a desktop MT5 that has logged in once) and keep the terminal's own copy after
+# every start, so one successful login teaches all later starts.
+
+# servers_dat_install SRC DEST: copy SRC over DEST atomically; prints a log line.
+servers_dat_install() {
+  local src=$1 dest=$2 tmp
+  [ -s "$src" ] || { echo "servers.dat: $src missing or empty, keeping the stock list"; return 1; }
+  mkdir -p "$(dirname "$dest")"
+  tmp="$dest.gomql5-tmp"
+  cp "$src" "$tmp" && mv -f "$tmp" "$dest" || return 1
+  echo "servers.dat: installed $src ($(stat -c %s "$dest") bytes, sha256 $(sha256sum "$dest" | cut -c1-12))"
+}
+
+# servers_dat_save SRC DIR: keep a copy of the terminal's servers.dat in DIR
+# when it changed; silent when unchanged.
+servers_dat_save() {
+  local src=$1 dir=$2 tmp
+  [ -s "$src" ] && [ -d "$dir" ] || return 0
+  cmp -s "$src" "$dir/servers.dat" 2>/dev/null && return 0
+  tmp="$dir/.servers.dat.tmp"
+  cp "$src" "$tmp" && mv -f "$tmp" "$dir/servers.dat" &&
+    echo "servers.dat: saved to $dir ($(stat -c %s "$dir/servers.dat") bytes, sha256 $(sha256sum "$dir/servers.dat" | cut -c1-12))"
+}
+
 # Print an MT5 UTF-16LE log as UTF-8 without CRs.
 mt5_log() { iconv -f UTF-16LE -t UTF-8 "$1" | tr -d '\r'; }
