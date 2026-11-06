@@ -15,7 +15,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 script="$here/../../../scripts/goldrec-e2e.sh"
 wizard="$here/testdata/journal-ftmo-wizard.txt"
 defs=$(sed -n '/^# Live-login phase timings/,/^# collect:/p; /^# wait_until DEADLINE/,/^wait_for()/p; /^# login_failure SERVER/,/^say "goldrec on/p' "$script" | grep -v '^say "goldrec on')
-for f in wait_until mark_started phase record_timings live_fail login_failure ensure_live; do
+for f in wait_until mark_started phase record_timings live_fail login_failure ensure_live live_note; do
   [[ "$defs" == *"$f()"* ]] || { echo "FAIL: $f not found in $script"; exit 1; }
 done
 fail=0
@@ -701,6 +701,33 @@ has "symbol refused to the end: names the candidates" "$out" "candidates: XAUUSD
 out=$(STUB_FEED=no-obs STUB_RUN_LOG="$refused" STUB_LATE_OBS=1 whole)
 reason "symbol refused, without --require-live: still fails fast" "$out" symbol_missing 27 start
 has "symbol refused, without --require-live: quotes the line" "$out" "FAIL reason=symbol_missing: broker symbol XAUUSD unavailable: $refused"
+
+# live_note (after a LIVE PASS): a note only when a stage's first live tick came after 30 s.
+# note_out FIRST_TICK RESTART FIRST_BEFORE: live_note with the timings given, output only.
+note_out() {
+  bash -c '
+    set -u
+    say() { echo "[goldrec-e2e] $*"; }
+    now() { echo 0; }
+    eval "$1"
+    T_TICK=$2 RESTART=$3 first_live_before=$4
+    live_note
+  ' _ "$defs" "$1" "$2" "$3" 2>&1
+}
+out=$(note_out 31 0 "")
+has "note: first tick at 31 s" "$out" "[goldrec-e2e] note: first live tick after 31s (target 30s)"
+out=$(note_out 30 0 "")
+hasnt "note: first tick at exactly 30 s: none" "$out" "note:"
+out=$(note_out 10 0 "")
+hasnt "note: first tick at 10 s: none" "$out" "note:"
+out=$(note_out "" 0 "")
+hasnt "note: no tick: none" "$out" "note:"
+out=$(note_out 20 1 45)
+has "note: restart stage slow, start fast: names the slow one" "$out" "note: first live tick after 45s (target 30s)"
+out=$(note_out 50 1 45)
+has "note: both slow: names the slowest" "$out" "note: first live tick after 50s (target 30s)"
+out=$(note_out 20 1 25)
+hasnt "note: both at or under 30 s: none" "$out" "note:"
 
 # session.sh reports 77 as SKIP, so no failure may use it.
 if grep -nE 'live_fail(_why)? .*\b77\b' "$script"; then echo "FAIL rc 77 used in $script"; fail=1; else echo "ok   rc 77 is not used"; fi

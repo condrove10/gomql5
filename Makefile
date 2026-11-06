@@ -19,7 +19,7 @@ FUZZTIME ?= 20s
 BROKER_SYMBOL ?= BTCUSD
 POSITIONING_SOURCE ?= replay
 E2E_TIMEOUT ?= 600
-LIVE_BUDGET ?= 120
+LIVE_BUDGET ?= 60
 export FUZZTIME BROKER_SYMBOL POSITIONING_SOURCE E2E_TIMEOUT LIVE_BUDGET
 
 # A noexec /tmp breaks `go test` ("fork/exec …: permission denied"): Go runs

@@ -23,7 +23,7 @@
 #                       at once when the journal shows the server rejected the login
 #   --live-budget S     with --require-live: the EA, the identity, the symbol and the first
 #                       fresh record must all be there within S seconds of the terminal
-#                       container starting (default 120), else FAIL with the first of them
+#                       container starting (default 60), else FAIL with the first of them
 #                       missing (see ensure_live); applies again after --restart.
 #                       Phase timings go to the output and to OUT/timings.txt
 #   --max-lag S         with --require-live: how many seconds behind the broker's clock
@@ -63,7 +63,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SYM=XAUUSD SOURCE=replay INTERVAL=15s MIN_TICKS=3 RESTART=0 TIMEOUT=300 PORT=7789 KEEP=0 OUT=""
-LIVE=0 SERVERS_DAT="" STATE_DIR="" LIVE_BUDGET=120 POLL=3 MAX_LAG=60
+LIVE=0 SERVERS_DAT="" STATE_DIR="" LIVE_BUDGET=60 POLL=3 MAX_LAG=60
 LIVE_FRESH=3 # L4: fresh records a container must show, whatever --min-ticks says
 while [ $# -gt 0 ]; do
   case $1 in
@@ -577,6 +577,17 @@ live_pass() {
   build=$(grep -o '"build":[0-9]*' "$DATA/events.jsonl" 2>/dev/null | tail -1 | cut -d: -f2) || true
   say "LIVE PASS: server=$(account_field server) symbol=$SYM fresh=$fresh first_live=$first max_lag=$lag image=${image:-?} build=${build:-?} company=$(account_field company)"
 }
+# live_note: after a LIVE PASS, one note when a stage's first live tick came more than
+# 30 s after its container started (the target; LIVE_BUDGET is the limit). With
+# --restart both stages count; the slowest is named. Never changes the result.
+live_note() {
+  local t slowest="" stages=("$T_TICK")
+  [ "$RESTART" != 1 ] || stages+=("${first_live_before:-}")
+  for t in "${stages[@]}"; do
+    if [ -n "$t" ] && [ "$t" -gt 30 ] && { [ -z "$slowest" ] || [ "$t" -gt "$slowest" ]; }; then slowest=$t; fi
+  done
+  [ -z "$slowest" ] || say "note: first live tick after ${slowest}s (target 30s)"
+}
 
 say "goldrec on 127.0.0.1:$PORT (source=$SOURCE, broker symbol $SYM); terminal $NAME"
 : >"$OUT/timings.txt"
@@ -618,5 +629,5 @@ fi
 say "      first tick: $(head -1 "$DATA/prices.jsonl")"
 say "      last observation: $(tail -1 "$DATA/sentiment.jsonl" | cut -c1-400)"
 say "      evidence: $OUT (goldrec.log, data/, terminal.log, screen.png, journal.png, experts-log.png)"
-if [ $LIVE = 1 ]; then live_pass; fi
+if [ $LIVE = 1 ]; then live_pass; live_note; fi
 write_result ok 0 # last: an error above must not leave a green result

@@ -59,17 +59,19 @@ bundle.
   without them it fails with `reason=env_missing` (rc 10). A live PASS means
   rules L1 to L7 below all hold, the run prints a `LIVE PASS:` line, and
   `result.txt` holds `reason=ok rc=0`.
-* **2-minute live budget.** The first live tick must be recorded within
-  `LIVE_BUDGET` seconds (default 120; `goldrec-e2e.sh --live-budget S`) of
+* **1-minute live budget.** The first live tick must be recorded within
+  `LIVE_BUDGET` seconds (default 60; `goldrec-e2e.sh --live-budget S`) of
   the terminal container starting, and again after the restart (a fresh
   container, timed from its own start). Otherwise it fails with the elapsed
   seconds and the phase reached: container started → EA connected
   (`terminal_connected`) → trade server connected (latest `terminal_info`)
   → first live tick. Each run prints, and writes to `timings.txt`, e.g.
-  `start: ea_connected=41s trade_server=58s first_live_tick=63s (budget
-  120s)`. The rest of `--min-ticks` may take longer, up to `--timeout` from
+  `start: ea_connected=11s trade_server=18s first_live_tick=24s (budget
+  60s)`. The rest of `--min-ticks` may take longer, up to `--timeout` from
   the container start. `docker/mt5/test/goldrec_e2e_budget_test.sh` tests
-  this logic without Docker.
+  this logic without Docker. A LIVE PASS whose first live tick came after 30 s
+  (the target) also prints `[goldrec-e2e] note: first live tick after Ns`; it
+  never changes the result.
 * The login is config-only. `MT5_SERVER` must be `address:port` or a name
   listed in `config/servers.dat`: set `MT5_SERVERS_DAT` to a desktop MT5's
   copy (*File → Open Data Folder* → `config/servers.dat`). `mt5-state/`

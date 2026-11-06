@@ -31,7 +31,7 @@
 # a desktop MT5's File > Open Data Folder > config/servers.dat; not needed when
 # MT5_SERVER is address:port), FUZZTIME, BROKER_SYMBOL (BTCUSD: trades 24/7, so
 # the live check never hits a closed market; XAUUSD for gold hours),
-# POSITIONING_SOURCE (replay | api), E2E_TIMEOUT (600), LIVE_BUDGET (120: e2e-live
+# POSITIONING_SOURCE (replay | api), E2E_TIMEOUT (600), LIVE_BUDGET (60: e2e-live
 # fails unless the first live tick arrives within this many seconds of the
 # terminal container starting, before and after the restart),
 # plus e2e.sh's E2E_CA_CERT, HTTPS_PROXY, BASE_IMAGE, GO_IMAGE.
@@ -55,7 +55,7 @@ FUZZTIME="${FUZZTIME:-20s}"
 BROKER_SYMBOL="${BROKER_SYMBOL:-BTCUSD}"
 POSITIONING_SOURCE="${POSITIONING_SOURCE:-replay}"
 E2E_TIMEOUT="${E2E_TIMEOUT:-600}"
-LIVE_BUDGET="${LIVE_BUDGET:-120}"
+LIVE_BUDGET="${LIVE_BUDGET:-60}"
 
 # A noexec /tmp breaks `go test`; see scripts/gotmpdir.sh.
 GOTMPDIR="$(bash scripts/gotmpdir.sh)"
@@ -197,12 +197,12 @@ s_e2e_live() {
   # <data folder>/config/servers.dat) the config login reaches the broker
   # without any UI step.
   local args=(--require-live --broker-symbol "$BROKER_SYMBOL" --min-ticks 5 --restart --timeout "$E2E_TIMEOUT"
-    --live-budget "${LIVE_BUDGET:-120}" --source "$POSITIONING_SOURCE" --out "$OUT/e2e-live" --state "$ROOT/mt5-state")
+    --live-budget "${LIVE_BUDGET:-60}" --source "$POSITIONING_SOURCE" --out "$OUT/e2e-live" --state "$ROOT/mt5-state")
   [ -n "${MT5_SERVERS_DAT:-}" ] && args+=(--servers-dat "$MT5_SERVERS_DAT")
   echo "-- servers.dat: ${MT5_SERVERS_DAT:-not given}; state dir mt5-state/ $(servers_state_status "$ROOT/mt5-state")"
   scripts/goldrec-e2e.sh "${args[@]}"
   local rc=$?
-  echo "-- live-login timings (seconds since the container started; budget ${LIVE_BUDGET:-120}s to the first live tick):"
+  echo "-- live-login timings (seconds since the container started; budget ${LIVE_BUDGET:-60}s to the first live tick):"
   cat "$OUT/e2e-live/timings.txt" 2>/dev/null
   echo "-- live price sample:"; grep '"trade_server_connected":true' "$OUT/e2e-live/data/prices.jsonl" 2>/dev/null | head -3
   echo "-- symbol re-subscriptions (selected? quote time = market open? errors = symbol missing?):"
