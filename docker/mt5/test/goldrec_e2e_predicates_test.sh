@@ -153,7 +153,9 @@ has "the verdict decides: passes" "$out" "exit=0"
 # flow LIVE MIN_TICKS: the script's own lines from the first start through the restart,
 # with the waits stubbed to say what they were asked.
 flow() (
-  LIVE=$1 MIN_TICKS=$2 RESTART=1 SYM=XAUUSD STAGE=x RUN_LABEL=x T_TICK=30 LC_FRESH=3
+  # NAME too: the restart lines stop the container by name, and set -u must not depend on
+  # the caller's environment (WSL exports NAME=<hostname>; CI runners do not).
+  LIVE=$1 MIN_TICKS=$2 RESTART=1 SYM=XAUUSD STAGE=x RUN_LABEL=x T_TICK=30 LC_FRESH=3 NAME=c
   ensure_live() { echo "ensure_live $*"; }
   wait_for() { echo "wait_for $*"; }
   start_terminal() { :; }
