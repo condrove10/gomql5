@@ -8,6 +8,9 @@ goldrec-data/
 session-out/
 .e2e.env
 .gotmp/
-mt5-state/
+# Verified FTMO-Demo route: kept in the (private) repo; e2e-live rewrites it after each live PASS.
+mt5-state/*
+!mt5-state/servers.dat
+!mt5-state/servers.dat.verified
 .claude/sweeps/
 .claude/outputs/
