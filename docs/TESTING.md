@@ -57,7 +57,7 @@ bundle.
 
 * `make e2e-live` needs `MT5_*`. Named on the command line it never skips:
   without them it fails with `reason=env_missing` (rc 10). A live PASS means
-  rules L1 to L6 below all hold, the run prints a `LIVE PASS:` line, and
+  rules L1 to L7 below all hold, the run prints a `LIVE PASS:` line, and
   `result.txt` holds `reason=ok rc=0`.
 * **2-minute live budget.** The first live tick must be recorded within
   `LIVE_BUDGET` seconds (default 120; `goldrec-e2e.sh --live-budget S`) of
@@ -81,7 +81,7 @@ bundle.
   sources the file after `make` has exported its defaults. Keep values that
   contain `$` in single quotes.
 
-#### Live PASS rules (L1 to L6)
+#### Live PASS rules (L1 to L7)
 
 `scripts/goldrec-e2e.sh --require-live` (and so `make e2e-live`) passes only
 when each rule holds for every container, the restarted one included. Each
@@ -98,9 +98,10 @@ rule reads only the current `run_id` and the connection under test (`conn`).
 | L4 | the connection's first record is dropped, then at least 3 records with strictly rising `provider_time_msc` follow, received after the L1 event |
 | L5 | for consecutive accepted records, `abs(Δprovider_time_msc − Δreceived_at)` is at most 30 s |
 | L6 | the last accepted `provider_time_msc` is within 300 s of `server_time*1000` from the same poll |
+| L7 | the last accepted record arrived at most `--max-lag` seconds (default 60) behind the broker: `received_at − (provider_time_msc − offset)`, where the broker clock's offset to UTC is `server_time*1000 − received_at`, rounded to 15 min. L5 and L6 cannot see a steady lag; fails with rc 32 |
 
-A PASS prints `LIVE PASS: server=… symbol=… fresh=… first_live=… image=…
-build=… company=…` and writes `reason=ok rc=0` to `result.txt`. A failure
+A PASS prints `LIVE PASS: server=… symbol=… fresh=… first_live=… max_lag=…
+image=… build=… company=…` and writes `reason=ok rc=0` to `result.txt`. A failure
 writes `reason=<r> rc=<n>` to `result.txt`, prints `FAIL reason=<r>: …`, and
 exits with `<n>`. rc 77 is never used, because `session.sh` reads it as SKIP.
 
@@ -127,6 +128,7 @@ exits with `<n>`. rc 77 is never used, because `session.sh` reads it as SKIP.
 | 29 | `stale_ticks` | ticks arrive but are old or out of pace (L5, L6) |
 | 30 | `recorder_died` | goldrec exited; the end of its log is printed |
 | 31 | `not_read_only` | the window title has no `Read Only` |
+| 32 | `lagging` | fresh ticks, but the newest arrived more than `--max-lag` seconds (default 60) behind the broker's clock (L7) |
 | 75 | `market_closed` | no fresh tick, and the last quote is older than 300 s on the broker clock. Inconclusive, not a PASS |
 
 **Cloud sandbox limit (2026-11-04).** With an FTMO demo account

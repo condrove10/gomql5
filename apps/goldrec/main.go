@@ -50,10 +50,11 @@ func main() {
 	expectServer := flag.String("expect-server", "", "with -check-live: the trade server the terminal must be on")
 	minFresh := flag.Int("min-fresh", 3, "with -check-live: fresh ticks required, not counting the connection's first")
 	conn := flag.Uint64("conn", 0, "with -check-live: the connection to judge, from 1, within the latest run")
+	maxLag := flag.Duration("max-lag", 60*time.Second, "with -check-live: how far behind the broker clock the newest fresh tick may arrive (L7, rc 32 lagging)")
 	flag.Parse()
 
 	if *checkLive {
-		res := record.CheckLive(record.LiveCheck{Dir: *out, ExpectLogin: *expectLogin, ExpectServer: *expectServer, MinFresh: *minFresh, Conn: *conn})
+		res := record.CheckLive(record.LiveCheck{Dir: *out, ExpectLogin: *expectLogin, ExpectServer: *expectServer, MinFresh: *minFresh, Conn: *conn, MaxLag: *maxLag})
 		fmt.Println(res)
 		os.Exit(res.RC)
 	}

@@ -22,7 +22,7 @@ fresh=$(grep -E '^LIVE_FRESH=' "$script")
 [ -n "$first" ] && [ -n "$again" ] && [ -n "$fresh" ] || { echo "FAIL: main flow not found in $script"; exit 1; }
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
-OUT=$T DATA=$T/data
+OUT=$T DATA=$T/data MAX_LAG=60
 mkdir "$DATA"
 now() { echo 1000; } # the definitions read the clock
 eval "$defs"
@@ -69,20 +69,29 @@ verdict() {
   chmod +x "$OUT/goldrec"
 }
 MT5_LOGIN=12345678 EXPECT_SERVER=FTMO-Demo
-parsed() { live_check 1 3; echo "$LC_REASON/$LC_WAITING/$LC_RECORDS/$LC_FRESH"; }
+parsed() { live_check 1 3; echo "$LC_REASON/$LC_WAITING/$LC_RECORDS/$LC_FRESH/$LC_MAX_LAG"; }
 verdict 64 'reason=pending conn=1 records=5 fresh=0/3 waiting=ticks'
-same "pending: the line is read" "$(parsed)" "pending/ticks/5/0"
-verdict 0 'reason=ok conn=1 records=4 fresh=3/3 last_tick_age_ms=900 server="FTMO-Demo" company="FTMO"'
-same "ok: the line is read" "$(parsed)" "ok//4/3"
-verdict 1 'panic: something else'
-same "any other shape is no verdict" "$(parsed)" "//0/0"
+same "pending: the line is read" "$(parsed)" "pending/ticks/5/0/"
+verdict 0 'reason=ok conn=1 records=4 fresh=3/3 last_tick_age_ms=900 max_lag_ms=150 server="FTMO-Demo" company="FTMO"'
+same "ok: the line is read" "$(parsed)" "ok//4/3/150"
+verdict 0 'reason=ok conn=1 records=4 fresh=3/3 last_tick_age_ms=900 max_lag_ms=-40 server="x max_lag_ms=9" company="FTMO"'
+same "ok: a negative lag, and only the field itself" "$(parsed)" "ok//4/3/-40"
+verdict 32 'reason=lagging conn=1 records=4 fresh=3/3 lag_ms=70000 max_lag_ms=70000 broker_offset_s=7200'
+same "lagging: the line is read" "$(parsed)" "lagging//4/3/70000"
+verdict 1 'panic: something else max_lag_ms=5'
+same "any other shape is no verdict" "$(parsed)" "//0/0/"
 : >"$T/check-args"
 parsed >/dev/null
 same "asked about the expected account and that connection" "$(cat "$T/check-args")" \
-  "-check-live -out $DATA -expect-login 12345678 -expect-server FTMO-Demo -min-fresh 3 -conn 1"
+  "-check-live -out $DATA -expect-login 12345678 -expect-server FTMO-Demo -min-fresh 3 -conn 1 -max-lag 60s"
+
+# lag_secs MS: what the LIVE PASS line prints as max_lag.
+for v in '150 0.2s' '0 0.0s' '17749 17.7s' '17750 17.8s' '60000 60.0s' '-150 -0.2s' ' ?'; do
+  same "lag_secs ${v% *}" "$(lag_secs "${v% *}")" "${v#* }"
+done
 
 holds() { LC_REASON=${1:-} LC_WAITING=${2:-}; account_holds; }
-for v in ok stale_ticks 'pending ticks' 'pending server_time'; do check "the account holds: $v" true holds $v; done
+for v in ok stale_ticks lagging 'pending ticks' 'pending server_time'; do check "the account holds: $v" true holds $v; done
 for v in 'pending account' 'pending connected' wrong_account fallback_server ''; do check "the account does not hold: ${v:-no verdict}" false holds $v; done
 
 # labelled N true|false: N price records, all with that label.
@@ -103,7 +112,7 @@ ensure() {
     say() { echo "$*"; }
     eval "$1"
     OUT=$2 DATA=$2/data
-    LIVE_BUDGET=9 TIMEOUT=30 POLL=3 NAME=c SYM=XAUUSD STAGE=start
+    LIVE_BUDGET=9 TIMEOUT=30 POLL=3 NAME=c SYM=XAUUSD STAGE=start MAX_LAG=60
     MT5_LOGIN=12345678 MT5_PASSWORD=x MT5_SERVER=FTMO-Demo EXPECT_SERVER=FTMO-Demo
     show_network() { :; }
     terminal_fatal() { return 1; }
@@ -128,6 +137,9 @@ has "labelled live, one fresh record short: no PASS" "$out" "exit=28"
 verdict 29 'reason=stale_ticks conn=1 records=5 fresh=3/3 last_tick_age_ms=999999'
 out=$(ensure 3)
 has "labelled live, the verdict says stale: no PASS" "$out" "exit=29"
+verdict 32 'reason=lagging conn=1 records=5 fresh=3/3 lag_ms=70000 max_lag_ms=70000 broker_offset_s=7200'
+out=$(ensure 3)
+has "labelled live, the verdict says lagging: no PASS" "$out" "exit=32"
 verdict 25 'reason=wrong_account conn=1 records=5 fresh=3/3 server="FTMO-Demo"'
 out=$(ensure 3)
 has "labelled live, the verdict says another login: no PASS" "$out" "exit=25"

@@ -31,9 +31,10 @@ trap 'rm -rf "$T"' EXIT
 # records. Prints the output, exit=N, timings.txt, result.txt and check-args (what
 # -check-live was asked). Env: PASS (MT5_PASSWORD), SERVER (MT5_SERVER), NEED (fresh
 # records, default 1), EVENTS (a file to use as events.jsonl), TITLE and TITLE_AT (the
-# window title, stale until then); ACCOUNT, FB_AT, SWITCH_AT, STALE, NO_SERVER_TIME
-# and CHECK_LINE steer the -check-live stub, which answers in goldrec's own format
-# and order (identity, connected, stale, ticks, server time).
+# window title, stale until then); MAX_LAG (--max-lag, default 60); ACCOUNT, FB_AT,
+# SWITCH_AT, STALE, NO_SERVER_TIME, LAGGING and CHECK_LINE steer the -check-live stub,
+# which answers in goldrec's own format and order (identity, connected, stale, ticks,
+# server time, lag).
 run() {
   local o="$T/out.$RANDOM"; mkdir -p "$o/data"
   [ -z "${EVENTS:-}" ] || cp "$EVENTS" "$o/data/events.jsonl"
@@ -43,7 +44,7 @@ run() {
     now() { echo "$CLOCK"; }
     eval "$1"
     EA_AT=$2 TR_AT=$3 TK_AT=$4 J=$5 MODE=$6 OUT=$7 DATA=$7/data CONN=1
-    LIVE_BUDGET=${BUDGET:-120} TIMEOUT=${TIMEOUT:-300} POLL=3 NAME=c SYM=XAUUSD RATE=${RATE:-5} NEED=${NEED:-1}
+    LIVE_BUDGET=${BUDGET:-120} TIMEOUT=${TIMEOUT:-300} POLL=3 NAME=c SYM=XAUUSD RATE=${RATE:-5} NEED=${NEED:-1} MAX_LAG=${MAX_LAG:-60}
     MT5_LOGIN=12345678 MT5_PASSWORD=${PASS-x} MT5_SERVER=${SERVER:-FTMO-Demo} EXPECT_SERVER=${SERVER:-FTMO-Demo} STAGE=start
     GOOD_TITLE="12345678 - $EXPECT_SERVER: Demo Account - Read Only - Hedge - FTMO Global Markets Ltd"
     sleep() { # fake clock; a loop that ignores the budget would never end
@@ -70,7 +71,7 @@ run() {
     }
     latest_conn() { if at "$EA_AT"; then echo "$CONN"; else echo $((CONN - 1)); fi; }
     conn_connected() { at "$TR_AT"; }
-    goldrec_check() { # -expect-login L -expect-server S -min-fresh M -conn K
+    goldrec_check() { # -expect-login L -expect-server S -min-fresh M -conn K -max-lag D
       local min=$6 k=$8 n=0 head account=${ACCOUNT:-ok}
       echo "$*" >>"$OUT/check-args"
       if [ -n "${CHECK_LINE:-}" ]; then echo "$CHECK_LINE"; return "${CHECK_RC:-1}"; fi
@@ -88,7 +89,8 @@ run() {
       if [ -n "${STALE:-}" ] && [ "$n" -gt 0 ]; then echo "reason=stale_ticks $head last_tick_age_ms=999999"; return 29; fi
       if [ "$n" -lt "$min" ]; then echo "reason=pending $head waiting=ticks"; return 64; fi
       if [ -n "${NO_SERVER_TIME:-}" ]; then echo "reason=pending $head waiting=server_time"; return 64; fi
-      echo "reason=ok $head last_tick_age_ms=900 server=\"FTMO-Demo\" company=\"FTMO\""
+      if [ -n "${LAGGING:-}" ]; then echo "reason=lagging $head lag_ms=70000 max_lag_ms=70000 broker_offset_s=7200"; return 32; fi
+      echo "reason=ok $head last_tick_age_ms=900 max_lag_ms=150 server=\"FTMO-Demo\" company=\"FTMO\""
     }
     mark_started
     ensure_live 1 "$NEED"
@@ -126,7 +128,7 @@ has "within budget: passes" "$out" "exit=0"
 has "within budget: phases in order" "$out" "EA connected (42s)"
 has "within budget: timings printed" "$out" "timings (start): ea_connected=42s trade_server=60s first_live_tick=63s (budget 120s)"
 has "within budget: timings.txt" "$out" "timings.txt: start: ea_connected=42s trade_server=60s first_live_tick=63s (budget 120s)"
-has "within budget: the verdict is asked about the expected account and connection 1" "$out" "check-args: -expect-login 12345678 -expect-server FTMO-Demo -min-fresh 1 -conn 1"
+has "within budget: the verdict is asked about the expected account and connection 1" "$out" "check-args: -expect-login 12345678 -expect-server FTMO-Demo -min-fresh 1 -conn 1 -max-lag 60s"
 has "within budget: says what the title showed" "$out" "read_only=yes"
 has "title is read with ui_main_window, through exec" "$out" 'title-cmd: w=$(ui_main_window) && xdotool getwindowname "$w"'
 hasnt "title is read without the UI lock" "$out" "ui_lock"
@@ -295,6 +297,15 @@ has "stale: age and count" "$out" "last_tick_age_ms=999999"
 out=$(STALE=1 TITLE="12345678 - MetaQuotes-Demo - Netting" run 10 20 30)
 failed "stale ticks while the title disagrees: identity first" "$out" identity_conflict 26
 
+out=$(LAGGING=1 run 10 20 30)
+failed "fresh records, but behind the broker" "$out" lagging 32
+has "lagging: at once" "$out" "result.txt: elapsed=30"
+has "lagging: says the limit and the lag" "$out" "more than 60s behind the broker's clock (reason=lagging conn=1 records=2 fresh=1/1 lag_ms=70000"
+out=$(MAX_LAG=30 run 10 20 30)
+has "--max-lag 30: passed on to -check-live" "$out" "-conn 1 -max-lag 30s"
+out=$(LAGGING=1 TITLE="12345678 - MetaQuotes-Demo - Netting" run 10 20 30)
+failed "lagging ticks while the title disagrees: identity first" "$out" identity_conflict 26
+
 out=$(NO_SERVER_TIME=1 RATE=5 run 10 20 30)
 failed "fresh records but never a server time" "$out" stale_ticks 29
 has "no server time: only at --timeout" "$out" "result.txt: elapsed=300"
@@ -346,11 +357,12 @@ if command -v go >/dev/null 2>&1; then
   }
   real_start() { rm -rf "$R"; mkdir -p "$R"; : >"$R/prices.jsonl"; printf '{"at":"2020-01-01T00:00:00Z","id":"e","kind":"run_start","run_id":"%s"}\n' "${RUN:-r1}" >>"$R/events.jsonl"; }
   real_acct() { real_ev account "$1" "$2" ",\"company\":\"FTMO S.R.O.\",\"login\":${3:-12345678},\"server\":\"${4:-FTMO-Demo}\",\"trade_allowed\":false"; real_ev terminal_info "$1" "$2" ',"build":6300,"trade_server_connected":true'; }
-  real_px() { # conn sec...; broker clock in step with received_at, from 2020-01-01T00:00:00Z
+  real_px() { # conn sec...; broker clock in step with received_at, from 2020-01-01T00:00:00Z,
+    # on UTC+2 like FTMO's; LAG_MS: every tick that much behind it
     local c=$1 s; shift
     for s in "$@"; do
       printf '{"run_id":"%s","conn":%s,"seq":1,"broker_company":"FTMO S.R.O.","broker_server":"FTMO-Demo","login":12345678,"broker_symbol":"XAUUSD","trade_server_connected":true,"provider_time_msc":%s,"received_at":"2020-01-01T00:00:%02dZ","server_time":%s}\n' \
-        "${RUN:-r1}" "$c" "$((1577836800000 + s * 1000))" "$s" "$((1577836800 + s))" >>"$R/prices.jsonl"
+        "${RUN:-r1}" "$c" "$((1577844000000 + s * 1000 - ${LAG_MS:-0}))" "$s" "$((1577844000 + s))" >>"$R/prices.jsonl"
     done
   }
   real() {
@@ -361,7 +373,7 @@ if command -v go >/dev/null 2>&1; then
       now() { echo "$CLOCK"; }
       eval "$1"
       OUT=$2 DATA=$2/data
-      LIVE_BUDGET=${BUDGET:-9} TIMEOUT=${TIMEOUT:-300} POLL=3 NAME=c SYM=XAUUSD
+      LIVE_BUDGET=${BUDGET:-9} TIMEOUT=${TIMEOUT:-300} POLL=3 NAME=c SYM=XAUUSD MAX_LAG=${MAX_LAG:-60}
       MT5_LOGIN=12345678 MT5_PASSWORD=x MT5_SERVER=FTMO-Demo EXPECT_SERVER=FTMO-Demo STAGE=${REAL_STAGE:-start}
       RUN_LABEL=$STAGE
       sleep() { CLOCK=$((CLOCK + $1)); }
@@ -371,7 +383,7 @@ if command -v go >/dev/null 2>&1; then
       scripts/mt5ctl.sh() { case $3 in exec) echo "1 - FTMO-Demo: Demo Account - Read Only - Hedge" ;; *) : ;; esac; }
       mark_started
       ensure_live "$3" "$4"
-      echo "ensured, fresh=$LC_FRESH"
+      echo "ensured, fresh=$LC_FRESH max_lag_ms=$LC_MAX_LAG"
     ' _ "$defs" "$o" "$1" "$2" 2>&1
     echo "exit=$?"
     sed 's/^/result.txt: /' "$o/result.txt" 2>/dev/null
@@ -380,6 +392,15 @@ if command -v go >/dev/null 2>&1; then
   real_start; real_ev terminal_connected 1 0 ',"login":0,"server":"MetaQuotes-Demo"'; real_acct 1 0; real_px 1 1 2 3 4
   out=$(real 1 3)
   has "real check: live data passes" "$out" "ensured, fresh=3"
+  has "real check: live data, no lag on a UTC+2 broker" "$out" "max_lag_ms=0"
+
+  # L7: a steady lag, which L5 and L6 cannot see (the audit's stall, larger).
+  real_start; real_ev terminal_connected 1 0; real_acct 1 0; LAG_MS=70000 real_px 1 1 2 3 4
+  out=$(real 1 3)
+  failed "real check: every tick 70 s behind the broker" "$out" lagging 32
+  has "real check: 70 s behind: the lag" "$out" "lag_ms=70000 max_lag_ms=70000 broker_offset_s=7200"
+  out=$(MAX_LAG=90 real 1 3)
+  has "real check: 70 s behind, --max-lag 90: passes" "$out" "ensured, fresh=3 max_lag_ms=70000"
   out=$(TIMEOUT=12 real 1 4)
   failed "real check: one record short, because the first is dropped" "$out" no_fresh_ticks 28
   has "real check: one record short: counts" "$out" "records=4 fresh=3"
@@ -500,9 +521,9 @@ cp "$STUB_RECORDER_BIN" "$3" # go build -o BIN ./apps/goldrec
 EOF
 cat >"$T/recorder" <<'EOF'
 #!/bin/bash
-if [ "${1:-}" = -check-live ]; then # -check-live -out D -expect-login L -expect-server S -min-fresh M -conn K
+if [ "${1:-}" = -check-live ]; then # -check-live -out D -expect-login L -expect-server S -min-fresh M -conn K -max-lag D
   m=$9 k=${11}
-  echo "-min-fresh $m -conn $k" >>"$STUB_OUT/check-args"
+  echo "-min-fresh $m -conn $k ${12:-} ${13:-}" >>"$STUB_OUT/check-args"
   case ${STUB_CHECK:-ok} in
     pending-account) echo "reason=pending conn=$k records=0 fresh=0/$m waiting=account"; exit 64 ;;
     pending-ticks) echo "reason=pending conn=$k records=1 fresh=0/$m waiting=ticks"; exit 64 ;;
@@ -510,8 +531,9 @@ if [ "${1:-}" = -check-live ]; then # -check-live -out D -expect-login L -expect
     fallback) echo "reason=fallback_server conn=$k records=$((m + 1)) fresh=$m/$m server=\"MetaQuotes-Demo\""; exit 22 ;;
     stale-restart)
       if [ "$k" -gt 1 ]; then echo "reason=stale_ticks conn=$k records=$((m + 1)) fresh=$m/$m first_fresh_msc=1 last_before_restart_msc=2"; exit 29; fi ;;
+    lagging) echo "reason=lagging conn=$k records=$((m + 1)) fresh=$m/$m lag_ms=70000 max_lag_ms=70000 broker_offset_s=7200"; exit 32 ;;
   esac
-  echo "reason=ok conn=$k records=$((m + 1)) fresh=$m/$m last_tick_age_ms=900 server=\"FTMO-Demo\" company=\"FTMO S.R.O.\""
+  echo "reason=ok conn=$k records=$((m + 1)) fresh=$m/$m last_tick_age_ms=900 max_lag_ms=$((150 + 1000 * (k - 1))) server=\"FTMO-Demo\" company=\"FTMO S.R.O.\""
   exit 0
 fi
 [ -z "${STUB_RECORDER_LOG:-}" ] || echo "$STUB_RECORDER_LOG"
@@ -628,14 +650,14 @@ live() { STUB_LOGIN=12345678 STUB_PASSWORD=x STUB_SERVER=FTMO-Demo whole --requi
 
 out=$(live)
 reason "live pass" "$out" ok 0 start
-if [[ "$out" =~ \[goldrec-e2e\]\ LIVE\ PASS:\ server=FTMO-Demo\ symbol=XAUUSD\ fresh=3\ first_live=[0-9]+s\ image=abcdef012345\ build=6300\ company=FTMO\ S\.R\.O\. ]]; then
+if [[ "$out" =~ \[goldrec-e2e\]\ LIVE\ PASS:\ server=FTMO-Demo\ symbol=XAUUSD\ fresh=3\ first_live=[0-9]+s\ max_lag=0\.2s\ image=abcdef012345\ build=6300\ company=FTMO\ S\.R\.O\. ]]; then
   echo "ok   live pass: LIVE PASS line, identity from the account event"
 else echo "FAIL live pass: LIVE PASS line in: $(echo "$out" | tr '\n' '|')"; fail=1; fi
 hasnt "live pass: no login in the LIVE PASS line" "$(echo "$out" | grep 'LIVE PASS')" "12345678"
 
 out=$(live --restart)
 reason "live pass with a restart" "$out" ok 0 restart
-if [[ "$out" =~ LIVE\ PASS:\ server=FTMO-Demo\ symbol=XAUUSD\ fresh=3/3\ first_live=[0-9]+s/[0-9]+s\ image=abcdef012345\ build=6300\ company=FTMO ]]; then
+if [[ "$out" =~ LIVE\ PASS:\ server=FTMO-Demo\ symbol=XAUUSD\ fresh=3/3\ first_live=[0-9]+s/[0-9]+s\ max_lag=0\.2s/1\.2s\ image=abcdef012345\ build=6300\ company=FTMO ]]; then
   echo "ok   live pass with a restart: per-container counts"
 else echo "FAIL live pass with a restart: LIVE PASS line in: $(echo "$out" | tr '\n' '|')"; fail=1; fi
 
@@ -655,6 +677,11 @@ reason "the title disagrees" "$out" identity_conflict 26 start
 hasnt "no LIVE PASS when the title disagrees" "$out" "LIVE PASS"
 out=$(STUB_CHECK=pending-ticks live --live-budget 1)
 reason "no fresh tick" "$out" no_fresh_ticks 28 start
+out=$(STUB_CHECK=lagging live --live-budget 1 --max-lag 45)
+reason "lagging ticks" "$out" lagging 32 start
+has "lagging ticks: names --max-lag" "$out" "FAIL reason=lagging: the newest fresh record is more than 45s behind the broker's clock"
+has "lagging ticks: --max-lag reaches -check-live" "$(cat "$T"/whole.*/check-args 2>/dev/null)" "-max-lag 45s"
+hasnt "no LIVE PASS when lagging" "$out" "LIVE PASS"
 out=$(STUB_CHECK=stale-restart live --restart --live-budget 1)
 reason "a stale restart" "$out" stale_ticks 29 restart
 hasnt "no LIVE PASS on a stale restart" "$out" "LIVE PASS"

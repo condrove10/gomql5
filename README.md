@@ -388,7 +388,7 @@ make help
 | `make probe` | network probes + one Myfxbook API round (if credentials are set) |
 | `make e2e` | bridge smoke test against the real terminal |
 | `make e2e-goldrec` | recorder pipeline against the real terminal, with a restart (no account needed) |
-| `make e2e-live` | recorder with your broker account: passes only when the account (login and server, from the `account` event), the trade-server connection, the window title and fresh ticks all hold (rules L1 to L6 in `docs/TESTING.md`), **within 2 minutes** of the terminal starting (`LIVE_BUDGET`). A named run never skips |
+| `make e2e-live` | recorder with your broker account: passes only when the account (login and server, from the `account` event), the trade-server connection, the window title and fresh ticks all hold (rules L1 to L7 in `docs/TESTING.md`), **within 2 minutes** of the terminal starting (`LIVE_BUDGET`). A named run never skips |
 | `make session` | **everything above, in order, into one log** |
 | `make session-live` | env, image, probes, e2e-live (account-focused) |
 | `make clean`, `make clean-docker` | local outputs; leftover containers and Docker build cache |

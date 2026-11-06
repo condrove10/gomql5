@@ -18,6 +18,8 @@ const (
 
 var lcT0 = time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 
+const lcMaxLag = 60 * time.Second // goldrec's -max-lag default
+
 // lcAt is lcT0 plus s seconds.
 func lcAt(s float64) time.Time { return lcT0.Add(time.Duration(s * float64(time.Second))) }
 
@@ -49,6 +51,23 @@ func lcTicks(run string, conn uint64, secs ...float64) []PriceRecord {
 		out = append(out, lcTick(run, conn, s))
 	}
 	return out
+}
+
+// lcLag puts every record ms behind the broker: the tick carries a broker time
+// that much older, while Ping still reads the broker's clock now.
+func lcLag(p []PriceRecord, ms int64) []PriceRecord {
+	for i := range p {
+		p[i].ProviderTimeMsc -= ms
+	}
+	return p
+}
+
+// lcLagEach is lcLag with a lag per record, in order.
+func lcLagEach(p []PriceRecord, ms ...int64) []PriceRecord {
+	for i := range p {
+		p[i].ProviderTimeMsc -= ms[i]
+	}
+	return p
 }
 
 func lcWrite(t *testing.T, dir, name string, recs []any) {
@@ -219,6 +238,49 @@ func TestCheckLiveRules(t *testing.T) {
 				p[3].ServerTime = 0
 				return p
 			}(), reason: "pending", rc: 64, waiting: "server_time"},
+		{name: "L7: a steady 70 s lag, however even the pace", events: lcHealthy(r, 1),
+			prices: lcLag(lcTicks(r, 1, 1, 2, 3, 4), 70000), reason: "lagging", rc: 32},
+		{name: "L7: exactly 60 s behind", events: lcHealthy(r, 1),
+			prices: lcLag(lcTicks(r, 1, 1, 2, 3, 4), 60000), reason: "ok"},
+		{name: "L7: 60.001 s behind", events: lcHealthy(r, 1),
+			prices: lcLag(lcTicks(r, 1, 1, 2, 3, 4), 60001), reason: "lagging", rc: 32},
+		{name: "L7: the newest accepted record decides", events: lcHealthy(r, 1),
+			prices: lcLagEach(lcTicks(r, 1, 1, 2, 3, 4, 5), 0, 70000, 45000, 20000, 0), reason: "ok"},
+		{name: "L7: falling behind on the newest record", events: lcHealthy(r, 1),
+			prices: lcLagEach(lcTicks(r, 1, 1, 2, 30, 60, 90), 0, 0, 25000, 50000, 75000), reason: "lagging", rc: 32},
+		{name: "L7: the dropped first record's lag does not count", events: lcHealthy(r, 1),
+			prices: lcLagEach(lcTicks(r, 1, 1, 2, 3, 4), 3600000, 0, 0, 0), reason: "ok"},
+		{name: "L7: a Ping 5 s old still gives the offset", events: lcHealthy(r, 1),
+			prices: func() []PriceRecord {
+				p := lcLag(lcTicks(r, 1, 1, 2, 3, 4), 59000)
+				for i := range p {
+					p[i].ServerTime -= 5
+				}
+				return p
+			}(), reason: "ok"},
+		{name: "L7: a broker at UTC+5:45, 70 s behind", events: lcHealthy(r, 1),
+			prices: func() []PriceRecord {
+				p := lcLag(lcTicks(r, 1, 1, 2, 3, 4), 70000)
+				for i := range p {
+					p[i].ProviderTimeMsc += 20700000
+					p[i].ServerTime += 20700
+				}
+				return p
+			}(), reason: "lagging", rc: 32},
+		{name: "L7: a broker at UTC+5:45, on time", events: lcHealthy(r, 1),
+			prices: func() []PriceRecord {
+				p := lcTicks(r, 1, 1, 2, 3, 4)
+				for i := range p {
+					p[i].ProviderTimeMsc += 20700000
+					p[i].ServerTime += 20700
+				}
+				return p
+			}(), reason: "ok"},
+		{name: "L7: a lag over the limit with too few records is still pending", events: lcHealthy(r, 1),
+			prices: lcLag(lcTicks(r, 1, 1, 2, 3), 70000), reason: "pending", rc: 64, waiting: "ticks"},
+		{name: "L7: identity comes before the lag",
+			events: []map[string]any{lcRunStart(r), lcAccount(r, 1, 0, 42, lcServer), lcInfo(r, 1, 0, true)},
+			prices: lcLag(lcTicks(r, 1, 1, 2, 3, 4), 70000), reason: "wrong_account", rc: 25},
 		{name: "another connection's events and records do not count", conn: 2, events: lcHealthy(r, 1),
 			prices: lcTicks(r, 1, 1, 2, 3, 4), reason: "pending", rc: 64, waiting: "account"},
 		{name: "another connection's records do not count", conn: 2,
@@ -266,7 +328,7 @@ func TestCheckLiveRules(t *testing.T) {
 				min = 3
 			}
 			got := CheckLive(LiveCheck{Dir: dir, ExpectLogin: lcLogin, ExpectServer: lcServer, MinFresh: min, Conn: conn,
-				Now: func() time.Time { return lcAt(c.nowS) }})
+				MaxLag: lcMaxLag, Now: func() time.Time { return lcAt(c.nowS) }})
 			if got.Reason != c.reason || got.RC != c.rc || got.Waiting != c.waiting {
 				t.Fatalf("got %q (rc %d), want reason=%s rc=%d waiting=%q", got, got.RC, c.reason, c.rc, c.waiting)
 			}
@@ -281,7 +343,7 @@ func TestCheckLiveRules(t *testing.T) {
 func TestCheckLiveLine(t *testing.T) {
 	dir := t.TempDir()
 	lcWrite(t, dir, "events.jsonl", lcAnyEvents([]map[string]any{lcRunStart("r"), lcAccount("r", 1, 0, 42, lcServer), lcInfo("r", 1, 0, true)}))
-	check := LiveCheck{Dir: dir, ExpectLogin: lcLogin, ExpectServer: lcServer, MinFresh: 3, Conn: 1}
+	check := LiveCheck{Dir: dir, ExpectLogin: lcLogin, ExpectServer: lcServer, MinFresh: 3, Conn: 1, MaxLag: lcMaxLag}
 	got := CheckLive(check).String()
 	for _, leak := range []string{"42", fmt.Sprint(lcLogin)} {
 		if strings.Contains(got, leak) {
@@ -301,13 +363,29 @@ func TestCheckLiveLine(t *testing.T) {
 		t.Fatalf("stale line: %q", got)
 	}
 	lcWrite(t, dir, "prices.jsonl", lcAnyPrices(lcTicks("r", 1, 1, 2, 3, 4)))
-	if got := CheckLive(check).String(); got != `reason=ok conn=1 records=4 fresh=3/3 last_tick_age_ms=0 server="Broker-Live" company="Poll Company"` {
+	if got := CheckLive(check).String(); got != `reason=ok conn=1 records=4 fresh=3/3 last_tick_age_ms=0 max_lag_ms=0 server="Broker-Live" company="Poll Company"` {
 		t.Fatalf("ok line: %q", got)
+	}
+	// The largest lag of the accepted records, though the newest decides.
+	lcWrite(t, dir, "prices.jsonl", lcAnyPrices(lcLagEach(lcTicks("r", 1, 1, 2, 3, 4, 5), 0, 70000, 45000, 20000, 150)))
+	if got := CheckLive(check).String(); got != `reason=ok conn=1 records=5 fresh=4/3 last_tick_age_ms=150 max_lag_ms=70000 server="Broker-Live" company="Poll Company"` {
+		t.Fatalf("recovered line: %q", got)
+	}
+	// Broker at UTC+2 (the BTCUSD run of the audit), every tick 16.2 s late.
+	p = lcTicks("r", 1, 1, 2, 3, 4)
+	for i := range p {
+		p[i].ProviderTimeMsc = lcAt(float64(i+1)).UnixMilli() + 7200000 - 16200 - int64(i)*500
+		p[i].ServerTime = lcAt(float64(i+1)).Unix() + 7200 - 3 // Ping a poll behind
+	}
+	lcWrite(t, dir, "prices.jsonl", lcAnyPrices(p))
+	check.MaxLag = 10 * time.Second
+	if got := CheckLive(check).String(); got != "reason=lagging conn=1 records=4 fresh=3/3 lag_ms=17700 max_lag_ms=17700 broker_offset_s=7200" {
+		t.Fatalf("lagging line: %q", got)
 	}
 }
 
 func TestCheckLiveArguments(t *testing.T) {
-	good := LiveCheck{Dir: t.TempDir(), ExpectLogin: lcLogin, ExpectServer: lcServer, MinFresh: 3, Conn: 1}
+	good := LiveCheck{Dir: t.TempDir(), ExpectLogin: lcLogin, ExpectServer: lcServer, MinFresh: 3, Conn: 1, MaxLag: lcMaxLag}
 	for _, c := range []struct {
 		name   string
 		change func(*LiveCheck)
@@ -318,6 +396,7 @@ func TestCheckLiveArguments(t *testing.T) {
 		{"no server", func(l *LiveCheck) { l.ExpectServer = "" }, "expect_server_missing", 12},
 		{"no connection", func(l *LiveCheck) { l.Conn = 0 }, "unclassified", 1},
 		{"no count", func(l *LiveCheck) { l.MinFresh = 0 }, "unclassified", 1},
+		{"no lag limit", func(l *LiveCheck) { l.MaxLag = 0 }, "unclassified", 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			l := good
@@ -331,7 +410,7 @@ func TestCheckLiveArguments(t *testing.T) {
 
 // The recorder is still writing while this reads, and nothing has to exist yet.
 func TestCheckLiveReadsPartialData(t *testing.T) {
-	check := LiveCheck{ExpectLogin: lcLogin, ExpectServer: lcServer, MinFresh: 3, Conn: 1}
+	check := LiveCheck{ExpectLogin: lcLogin, ExpectServer: lcServer, MinFresh: 3, Conn: 1, MaxLag: lcMaxLag}
 
 	t.Run("no directory", func(t *testing.T) {
 		check := check
@@ -383,9 +462,12 @@ func TestCheckLiveReadsPartialData(t *testing.T) {
 // then the terminal falling back and changing account.
 func TestCheckLiveThroughRecorder(t *testing.T) {
 	const tick = int64(1700000000000) // FakeEA's Ping says 1700000000 s
+	// FakeEA's Ping is a fixed second, not a clock: the offset it gives is off by
+	// up to 7.5 min (rounding to 15), so L7 is judged by the table above only.
+	const maxLag = time.Hour
 	dir, r, srv, stop := startHealth(t)
 	check := func(conn uint64) LiveResult {
-		return CheckLive(LiveCheck{Dir: dir, ExpectLogin: lcLogin, ExpectServer: lcServer, MinFresh: 3, Conn: conn})
+		return CheckLive(LiveCheck{Dir: dir, ExpectLogin: lcLogin, ExpectServer: lcServer, MinFresh: 3, Conn: conn, MaxLag: maxLag})
 	}
 	want := func(got LiveResult, reason, waiting string) {
 		t.Helper()
@@ -415,7 +497,7 @@ func TestCheckLiveThroughRecorder(t *testing.T) {
 	waitUntil(t, "two fresh records", func() bool { return check(1).Fresh == 2 })
 	want(check(1), "pending", "ticks")
 	sendTick(ea, tick+400)
-	waitUntil(t, "L1, L2, L4, L5, L6", func() bool { return check(1).Reason == "ok" })
+	waitUntil(t, "L1, L2, L4, L5, L6, L7", func() bool { return check(1).Reason == "ok" })
 
 	// The restart: conn 2 has its own login and its own first record, whatever
 	// conn 1 proved.
@@ -433,12 +515,12 @@ func TestCheckLiveThroughRecorder(t *testing.T) {
 	waitUntil(t, "three records on conn 2", func() bool { return check(2).Records == 3 })
 	want(check(2), "pending", "ticks")
 	sendTick(ea2, tick+800)
-	waitUntil(t, "L1, L2, L4, L5, L6 on conn 2", func() bool { return check(2).Reason == "ok" })
+	waitUntil(t, "L1, L2, L4, L5, L6, L7 on conn 2", func() bool { return check(2).Reason == "ok" })
 
 	// Identity beats perfect ticks, read from real account events.
 	f.set(lcLogin, "MetaQuotes-Demo", true)
 	waitUntil(t, "the fallback held briefly", func() bool { return check(2).Waiting == "account" })
-	got := CheckLive(LiveCheck{Dir: dir, ExpectLogin: lcLogin, ExpectServer: lcServer, MinFresh: 3, Conn: 2,
+	got := CheckLive(LiveCheck{Dir: dir, ExpectLogin: lcLogin, ExpectServer: lcServer, MinFresh: 3, Conn: 2, MaxLag: maxLag,
 		Now: func() time.Time { return time.Now().Add(16 * time.Second) }})
 	want(got, "fallback_server", "")
 	f.set(42, lcServer, true)

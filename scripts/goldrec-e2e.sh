@@ -26,6 +26,9 @@
 #                       container starting (default 120), else FAIL with the first of them
 #                       missing (see ensure_live); applies again after --restart.
 #                       Phase timings go to the output and to OUT/timings.txt
+#   --max-lag S         with --require-live: how many seconds behind the broker's clock
+#                       the newest fresh record may arrive (L7, default 60), else FAIL
+#                       with rc 32 (lagging)
 #   --servers-dat FILE  install FILE as the terminal's config/servers.dat (a desktop MT5's
 #                       copy that knows the broker): a config login to a named server
 #                       (MT5_SERVER=FTMO-Demo) then works without any UI
@@ -50,14 +53,17 @@
 # Exit 0 = PASS, else the failure's rc (never 77: scripts/session.sh reports that as SKIP).
 # rc 17 (terminal_running): a running container with host networking already has
 # GOBRIDGE_PORT=<port> (its env is never printed); see docs/TESTING.md for the table.
+# rc 32 (lagging): the newest fresh record arrived more than --max-lag seconds behind
+# the broker's clock (L7), however even the pace.
 # OUT/result.txt always holds reason=, rc=, stage= and elapsed= (whole-run seconds); a failure
-# prints "FAIL reason=<r>: <why>". --require-live prints a LIVE PASS line too.
+# prints "FAIL reason=<r>: <why>". --require-live prints a LIVE PASS line too, with
+# max_lag=<s>s: the largest lag of the fresh records (per container with --restart).
 # Runs $E2E_IMAGE (default gomql5/mt5:local; build with scripts/e2e.sh --build).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SYM=XAUUSD SOURCE=replay INTERVAL=15s MIN_TICKS=3 RESTART=0 TIMEOUT=300 PORT=7789 KEEP=0 OUT=""
-LIVE=0 SERVERS_DAT="" STATE_DIR="" LIVE_BUDGET=120 POLL=3
+LIVE=0 SERVERS_DAT="" STATE_DIR="" LIVE_BUDGET=120 POLL=3 MAX_LAG=60
 LIVE_FRESH=3 # L4: fresh records a container must show, whatever --min-ticks says
 while [ $# -gt 0 ]; do
   case $1 in
@@ -71,6 +77,7 @@ while [ $# -gt 0 ]; do
     --keep) KEEP=1 ;;
     --require-live) LIVE=1 ;;
     --live-budget) LIVE_BUDGET=$2; shift ;;
+    --max-lag) MAX_LAG=$2; shift ;;
     --servers-dat) SERVERS_DAT=$2; shift ;;
     --state) STATE_DIR=$2; shift ;;
     --out) OUT=$2; shift ;;
@@ -95,10 +102,10 @@ lines() { [ -f "$1" ] && wc -l <"$1" || echo 0; }
 # (mark_started, called by start_terminal); empty = phase not reached.
 T0=$(now) T_EA="" T_TRADE="" T_TITLE="" T_TICK="" RUN_LABEL=start
 # The latest goldrec -check-live verdict (live_check).
-LC_LINE="" LC_REASON="" LC_WAITING="" LC_RECORDS=0 LC_FRESH=0
+LC_LINE="" LC_REASON="" LC_WAITING="" LC_RECORDS=0 LC_FRESH=0 LC_MAX_LAG=""
 mark_started() {
   T0=$(now) T_EA="" T_TRADE="" T_TITLE="" T_TICK=""
-  LC_LINE="" LC_REASON="" LC_WAITING="" LC_RECORDS=0 LC_FRESH=0
+  LC_LINE="" LC_REASON="" LC_WAITING="" LC_RECORDS=0 LC_FRESH=0 LC_MAX_LAG=""
 }
 # phase: the last phase reached, in order.
 phase() {
@@ -108,6 +115,14 @@ phase() {
   else echo "container started"; fi
 }
 secs() { if [ -n "$1" ]; then echo "${1}s"; else echo never; fi; }
+# lag_secs MS: milliseconds as seconds to one decimal (no float in bash), ? when empty.
+lag_secs() {
+  local ms=${1:-} sign=""
+  [ -n "$ms" ] || { echo '?'; return; }
+  if [ "$ms" -lt 0 ]; then sign=- ms=$((-ms)); fi
+  ms=$((ms + 50))
+  echo "$sign$((ms / 1000)).$((ms % 1000 / 100))s"
+}
 timings_line() {
   echo "ea_connected=$(secs "$T_EA") trade_server=$(secs "$T_TRADE") first_live_tick=$(secs "$T_TICK") (budget ${LIVE_BUDGET}s)"
 }
@@ -401,20 +416,22 @@ json_str() { printf '%s\n' "$2" | sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p'; }
 # goldrec_check ARGS: the verdict on the recorder's files. Stderr stays out: a flag
 # error quotes its value, and the login is one.
 goldrec_check() { "$OUT/goldrec" -check-live -out "$DATA" "$@" 2>/dev/null; }
-# live_check CONN NEED: L1, L2, L4, L5 and L6 for that connection, into LC_*. Its exit
-# code says nothing the line does not; a line of any other shape leaves LC_REASON empty.
+# live_check CONN NEED: L1, L2, L4, L5, L6 and L7 (MAX_LAG) for that connection, into
+# LC_*. Its exit code says nothing the line does not; a line of any other shape leaves
+# LC_REASON empty. LC_MAX_LAG is the line's max_lag_ms, empty without one.
 live_check() {
   local shape='^reason=([a-z_]+) conn=[0-9]+ records=([0-9]+) fresh=([0-9]+)/[0-9]+( waiting=([a-z_]+))?'
-  LC_REASON="" LC_WAITING="" LC_RECORDS=0 LC_FRESH=0
-  LC_LINE=$(goldrec_check -expect-login "$MT5_LOGIN" -expect-server "$EXPECT_SERVER" -min-fresh "$2" -conn "$1") || true
+  LC_REASON="" LC_WAITING="" LC_RECORDS=0 LC_FRESH=0 LC_MAX_LAG=""
+  LC_LINE=$(goldrec_check -expect-login "$MT5_LOGIN" -expect-server "$EXPECT_SERVER" -min-fresh "$2" -conn "$1" -max-lag "${MAX_LAG}s") || true
   if [[ "$LC_LINE" =~ $shape ]]; then
     LC_REASON=${BASH_REMATCH[1]} LC_RECORDS=${BASH_REMATCH[2]} LC_FRESH=${BASH_REMATCH[3]} LC_WAITING=${BASH_REMATCH[5]}
+    if [[ "$LC_LINE" =~ \ max_lag_ms=(-?[0-9]+) ]]; then LC_MAX_LAG=${BASH_REMATCH[1]}; fi
   fi
 }
 # account_holds: the verdict is past L1 and L2. Only then does it speak about ticks.
 account_holds() {
   case $LC_REASON/$LC_WAITING in
-    ok/* | stale_ticks/* | pending/ticks | pending/server_time) return 0 ;;
+    ok/* | stale_ticks/* | lagging/* | pending/ticks | pending/server_time) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -477,9 +494,10 @@ budget_fail() {
 # EA connection is number CONNS or later. Polls, and asks in order: S1 the EA connected;
 # S2 the identity: goldrec -check-live on the latest connection (L1, L2), then the window
 # title (L3), which must also say Read Only (rc 31); S3 the symbol; S4 the first fresh record, all by LIVE_BUDGET seconds from the
-# start, and NEED fresh records (L4, L5, L6) by TIMEOUT. Definite answers end the run
+# start, and NEED fresh records (L4, L5, L6, L7) by TIMEOUT. Definite answers end the run
 # at once: another login or server (-check-live holds a server for 3 polls, so a late
-# switch passes), a rejection in the journal, stale ticks, a dead recorder or terminal.
+# switch passes), a rejection in the journal, stale or lagging ticks, a dead recorder
+# or terminal.
 # What is merely missing is judged at its deadline, in that same order (budget_fail).
 # A journal fallback is only a hint until then: the account is what shows it held.
 ensure_live() {
@@ -495,7 +513,7 @@ ensure_live() {
       # previous container, and -check-live reads this connection alone.
       live_check "$conn" "$need"
       case $LC_REASON in
-        ok | pending | stale_ticks) ;;
+        ok | pending | stale_ticks | lagging) ;;
         wrong_account) live_fail wrong_account 25 "account_info names another login than MT5_LOGIN, whatever the ticks say ($LC_LINE); ${el}s since the container started" ;;
         fallback_server) live_fail fallback_server 22 "the login is right, but the terminal stays on another server than $EXPECT_SERVER ($LC_LINE): $SERVERS_DAT_HINT; ${el}s since the container started" ;;
         *) live_fail unclassified 1 "goldrec -check-live gave no verdict (${LC_LINE:-no output}); ${el}s since the container started" ;;
@@ -510,6 +528,7 @@ ensure_live() {
         fi
         if [ -n "$T_TITLE" ]; then
           if [ "$LC_REASON" = stale_ticks ]; then live_fail stale_ticks 29 "$LC_LINE; ${el}s since the container started; phase: $(phase)"; fi
+          if [ "$LC_REASON" = lagging ]; then live_fail lagging 32 "the newest fresh record is more than ${MAX_LAG}s behind the broker's clock ($LC_LINE); ${el}s since the container started; phase: $(phase)"; fi
           # A record first seen after the budget (a slow poll) is too late.
           if [ -z "$T_TICK" ] && [ "$el" -le "$LIVE_BUDGET" ] && [ "$LC_FRESH" -ge 1 ]; then T_TICK=$el; say "first live $SYM tick (${el}s)"; fi
           if [ "$LC_REASON" = ok ] && [ -n "$T_TICK" ]; then break; fi
@@ -548,14 +567,15 @@ account_field() {
 # live_pass: the verdict line of a --require-live PASS; with --restart, counts
 # and timings are per container (first/restarted).
 live_pass() {
-  local fresh first image build
-  fresh=$LC_FRESH first=$(secs "$T_TICK")
+  local fresh first lag image build
+  fresh=$LC_FRESH first=$(secs "$T_TICK") lag=$(lag_secs "$LC_MAX_LAG")
   if [ "$RESTART" = 1 ]; then
     fresh=$fresh_before/$LC_FRESH first=$(secs "$first_live_before")/$(secs "$T_TICK")
+    lag=$(lag_secs "$max_lag_before")/$lag
   fi
   image=$(image_id) || true
   build=$(grep -o '"build":[0-9]*' "$DATA/events.jsonl" 2>/dev/null | tail -1 | cut -d: -f2) || true
-  say "LIVE PASS: server=$(account_field server) symbol=$SYM fresh=$fresh first_live=$first image=${image:-?} build=${build:-?} company=$(account_field company)"
+  say "LIVE PASS: server=$(account_field server) symbol=$SYM fresh=$fresh first_live=$first max_lag=$lag image=${image:-?} build=${build:-?} company=$(account_field company)"
 }
 
 say "goldrec on 127.0.0.1:$PORT (source=$SOURCE, broker symbol $SYM); terminal $NAME"
@@ -571,7 +591,7 @@ fi
 wait_for unclassified 1 "2 positioning observations" have_obs
 if [ $RESTART = 1 ]; then
   STAGE=restart
-  first_live_before=$T_TICK fresh_before=$LC_FRESH
+  first_live_before=$T_TICK fresh_before=$LC_FRESH max_lag_before=$LC_MAX_LAG
   live_conn=$(latest_conn)
   before=$(lines "$DATA/prices.jsonl")
   before_conn=$(count '"kind":"terminal_connected"' "$DATA/events.jsonl")

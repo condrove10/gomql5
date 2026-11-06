@@ -72,7 +72,7 @@ per process.
 ### Judge a live run: `-check-live`
 
 `-check-live` records nothing. It judges the data already in `-out` against
-the live rules L1 to L6 (`docs/TESTING.md`) for one connection of the latest
+the live rules L1 to L7 (`docs/TESTING.md`) for one connection of the latest
 run. It prints one `reason=` line and exits with that rule's rc (0 ok, 64
 pending, the others as in the `docs/TESTING.md` table):
 
@@ -82,7 +82,9 @@ bin/goldrec -check-live -out goldrec-data -expect-login <login> -expect-server <
 
 `-expect-login` and `-expect-server` are required. `-conn` is the connection
 number, from 1. `-min-fresh` defaults to 3 and does not count the
-connection's first record.
+connection's first record. `-max-lag` (default `60s`) is how far behind the
+broker's clock the newest fresh record may arrive (L7, `reason=lagging`, rc 32);
+an `ok` line reports the largest lag of the fresh records as `max_lag_ms`.
 
 ## 2. What is recorded
 

@@ -23,6 +23,10 @@ const (
 	// liveMaxAgeMsc is how far the last accepted tick may be from the server's
 	// clock (L6).
 	liveMaxAgeMsc = int64(300_000)
+	// liveOffsetUnitMsc is what the broker clock's offset to UTC is rounded to
+	// (L7): time zones are whole quarter hours, and the rounding absorbs a Ping
+	// that is a poll old.
+	liveOffsetUnitMsc = int64(15 * 60_000)
 )
 
 // LiveCheck says what one run of CheckLive looks at and expects.
@@ -32,6 +36,7 @@ type LiveCheck struct {
 	ExpectServer string
 	MinFresh     int
 	Conn         uint64
+	MaxLag       time.Duration    // how far behind the broker the newest accepted tick may arrive (L7)
 	Now          func() time.Time // default time.Now
 }
 
@@ -62,7 +67,7 @@ func (l LiveResult) String() string {
 }
 
 // CheckLive judges one connection of the latest run in Dir against the live
-// rules L1, L2, L4, L5 and L6 (L3, the window title, is outside the data). It
+// rules L1, L2, L4, L5, L6 and L7 (L3, the window title, is outside the data). It
 // only reads, so it can run beside a recorder that is still writing, and it
 // has no deadlines: what has not happened yet is reason=pending, and the caller
 // decides when pending has lasted too long, and what that means.
@@ -89,6 +94,8 @@ func CheckLive(c LiveCheck) LiveResult {
 		return verdict("unclassified", 1, "bad=-conn")
 	case c.MinFresh < 1:
 		return verdict("unclassified", 1, "bad=-min-fresh")
+	case c.MaxLag <= 0:
+		return verdict("unclassified", 1, "bad=-max-lag")
 	}
 	now := time.Now
 	if c.Now != nil {
@@ -140,7 +147,15 @@ func CheckLive(c LiveCheck) LiveResult {
 	if abs64(age) > liveMaxAgeMsc {
 		return verdict("stale_ticks", 29, fmt.Sprintf("last_tick_age_ms=%d", age))
 	}
-	return verdict("ok", 0, fmt.Sprintf("last_tick_age_ms=%d server=%q company=%q", age, ev.account.Server, ev.account.Company))
+	// L7. The broker clock is UTC plus an offset that Ping and received_at
+	// show; the tick, moved back to UTC, says how late it arrived. A steady lag
+	// passes L5 and L6 alike.
+	offset := roundTo(pr.last.ServerTime*1000-pr.last.ReceivedAt.UnixMilli(), liveOffsetUnitMsc)
+	lag, maxLag := pr.lastBehind+offset, pr.maxBehind+offset
+	if lag > c.MaxLag.Milliseconds() {
+		return verdict("lagging", 32, fmt.Sprintf("lag_ms=%d max_lag_ms=%d broker_offset_s=%d", lag, maxLag, offset/1000))
+	}
+	return verdict("ok", 0, fmt.Sprintf("last_tick_age_ms=%d max_lag_ms=%d server=%q company=%q", age, maxLag, ev.account.Server, ev.account.Company))
 }
 
 // liveEvent is what the check needs from a line of events.jsonl.
@@ -212,6 +227,8 @@ type livePrices struct {
 	firstMsc     int64       // the first accepted
 	floorMsc     int64       // the highest value on earlier connections of this run
 	belowRestart bool        // the first accepted is not above floorMsc
+	lastBehind   int64       // received_at minus provider_time_msc of the last accepted, in ms (L7)
+	maxBehind    int64       // the largest of those over the accepted
 }
 
 func readLivePrices(c LiveCheck, ev liveEvents) (livePrices, error) {
@@ -254,6 +271,12 @@ func readLivePrices(c LiveCheck, ev liveEvents) (livePrices, error) {
 				pr.offPace = off
 			}
 		}
+		// L7, before the offset is known: it is the same for every record.
+		behind := p.ReceivedAt.UnixMilli() - p.ProviderTimeMsc
+		if pr.fresh == 0 || behind > pr.maxBehind {
+			pr.maxBehind = behind
+		}
+		pr.lastBehind = behind
 		pr.fresh++
 		pr.last = p
 		return nil
@@ -287,6 +310,19 @@ func eachLiveLine(path string, f func(line []byte) error) error {
 			return fmt.Errorf("%s line %d: %w", filepath.Base(path), n, err)
 		}
 	}
+}
+
+// roundTo is v rounded to the nearest multiple of unit, halves away from minus
+// infinity, for either sign of v.
+func roundTo(v, unit int64) int64 {
+	q, r := v/unit, v%unit
+	if r < 0 {
+		q, r = q-1, r+unit
+	}
+	if 2*r >= unit {
+		q++
+	}
+	return q * unit
 }
 
 func abs64(v int64) int64 {
