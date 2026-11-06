@@ -45,7 +45,7 @@ run() { # FAKE_WINDOWS, expression -> output
 check() { # name, expected, actual
   if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: want '$2', got '$3'"; fail=1; fi
 }
-logged_in="11:1280x1000:1515192722:_FTMO-Demo_-_Demo_Account_-_Hedge_-_[XAUUSD,H1] 12:400x300:Options"
+logged_in="11:1280x1000:12345678:_FTMO-Demo_-_Demo_Account_-_Hedge_-_[XAUUSD,H1] 12:400x300:Options"
 no_account="21:1280x1000:MetaTrader_5_-_Netting_-_EURUSD,H1"
 check "main window found when logged in (title without 'MetaTrader 5')" "11" "$(run "$logged_in" ui_main_window)"
 check "largest window wins over a dialog" "11" "$(run "12:400x300:Options 11:1280x1000:x" ui_main_window)"
@@ -55,8 +55,8 @@ check "ui_wait_main fails with no window" "1" "$(run "" 'ui_wait_main 2; echo $?
 
 # Toolbox tab choice by login state. Titles are the real ones from a user's
 # runs (2026-11-04): authorized, login set but not authorized, logged out.
-authorized="11:1280x1000:1515192722_-_FTMO-Demo:_Demo_Account_-_Read_Only_-_Hedge_-_FTMO_Global_Markets_Ltd"
-not_authorized="11:1280x1000:1515192722_-_FTMO-Server2_-_Netting"
+authorized="11:1280x1000:12345678_-_FTMO-Demo:_Demo_Account_-_Read_Only_-_Hedge_-_FTMO_Global_Markets_Ltd"
+not_authorized="11:1280x1000:12345678_-_FTMO-Server2_-_Netting"
 clicks() { # windows, function -> the clicked "X Y"
   local f="$tmp/clicks"; : >"$f"
   PATH="$tmp/bin:$PATH" FAKE_CLICKS="$f" FAKE_WINDOWS="$1" GOMQL5_LIB="$here/../lib.sh" bash -c 'source "$GOMQL5_LIB"; sleep() { :; }; '"$2"

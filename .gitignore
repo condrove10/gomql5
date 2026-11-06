@@ -9,3 +9,5 @@ session-out/
 .e2e.env
 .gotmp/
 mt5-state/
+.claude/sweeps/
+.claude/outputs/
