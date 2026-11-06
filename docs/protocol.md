@@ -79,8 +79,12 @@ A trade the server rejects is **not** an error. `order_send` returns
 
 The EA polls `SymbolInfoTick` for every subscribed symbol on each timer tick
 (`InpTimerMs`, default 10 ms) and in `OnTick`. It sends an event when
-`time_msc` changes. Subscriptions are cleared on disconnect, so **Go must
-re-subscribe after a reconnect**.
+`time_msc` changes. The EA sends only the latest quote per poll, so ticks
+between polls and during a disconnect are not delivered and nothing counts
+them; `DroppedTicks` counts only Go-side overflow. A consumer that needs every
+tick should use `CopyTicksRange` from the last stored `time_msc` as the
+record, on reconnect and periodically. Subscriptions are cleared on
+disconnect, so **Go must re-subscribe after a reconnect**.
 
 ## Time
 

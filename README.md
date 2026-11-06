@@ -163,7 +163,10 @@ for {
 The EA polls subscribed symbols every `InpTimerMs` (10 ms) and pushes a tick
 whenever `time_msc` changes. If you stop reading, ticks beyond
 `Config.TickBuffer` (default 4096) are dropped rather than blocking responses.
-`term.DroppedTicks()` counts them.
+`term.DroppedTicks()` counts them. Ticks between polls and during a
+disconnect are not delivered, and nothing counts them. A consumer that needs
+every tick should treat `term.CopyTicksRange` from the last stored `time_msc`
+as the record, on reconnect and periodically.
 
 ### Reconnects
 

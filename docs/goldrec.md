@@ -157,9 +157,13 @@ zcat goldrec-data/$(jq -r .raw_ref goldrec-data/sentiment.jsonl | tail -1) | jq 
   the URL, and messages are redacted, both raw and URL-encoded.
 * **Durability.** Attempts, observations and events are fsynced per line.
   Ticks are flushed every second, so a crash loses at most about 1 s of
-  ticks. A store write failure stops the recorder with an error, so data is
-  never dropped silently. `DroppedTicks` (the bridge's back-pressure counter)
-  goes into events and status.
+  ticks. A store write failure stops the recorder with an error.
+  `DroppedTicks` (the bridge's back-pressure counter, Go-side overflow only)
+  goes into events and status. The EA sends only the latest quote per 10 ms
+  poll, so ticks between polls and during a disconnect are not delivered and
+  nothing counts them. A consumer that needs every tick should treat
+  `CopyTicksRange` from the last stored `time_msc` as the record, on
+  reconnect and periodically.
 * **Prices and positioning are separate series.** The instrument label of a
   price feed is `XAUUSD` only when the broker symbol looks like gold. A
   non-gold feed keeps its own name.
